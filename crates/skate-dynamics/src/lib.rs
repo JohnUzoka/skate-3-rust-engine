@@ -408,8 +408,11 @@ impl DynamicsWorld {
         &mut self,
         triangles: impl Iterator<Item = [[f32; 3]; 3]>,
     ) -> Result<(), String> {
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
+        // Reserved up front: pushing a city's 4.6 million vertices doubles the list
+        // to 96 MiB while the 48 MiB copy is still alive.
+        let count = triangles.size_hint().0;
+        let mut vertices = Vec::with_capacity(count * 3);
+        let mut indices = Vec::with_capacity(count);
         for triangle in triangles {
             let n = vertices.len() as u32;
             vertices.extend(triangle.map(|p| Vector::new(p[0], p[1], p[2])));

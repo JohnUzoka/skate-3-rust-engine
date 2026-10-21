@@ -230,6 +230,12 @@ pub(crate) fn player_attached(mods: &Mods) -> bool {
 }
 
 impl Mods {
+    /// Whether anything can use the dynamics world's map ground: a running mod,
+    /// or bodies or joints a mod left behind.
+    fn needs_ground(&self) -> bool {
+        self.manager.packages.values().any(|p| p.running()) || !self.bodies.is_empty() || !self.joints.is_empty()
+    }
+
     fn runtime_busy(&self) -> bool {
         self.manager.packages.values().any(|p| p.running())
             || !self.manager.commands.is_empty()
@@ -369,7 +375,10 @@ fn net_wire_key(owner: &str, key: &str) -> String {
 }
 
 fn ensure_ground(world: &World, mods: &mut Mods) -> Result<(), String> {
-    if mods.ground_ready {
+    // Rapier's copy of the map collision serves only mods. Downtown's keeps 220 MiB
+    // and peaks at 362 MiB while it builds, on the first tick of every map, so it
+    // waits for something that can use it.
+    if mods.ground_ready || !mods.needs_ground() {
         return Ok(());
     }
     mods.world.set_ground(
@@ -1877,5 +1886,25 @@ fn dispatch_profiled(manager: &mut skate_mods::Manager, callback: &str, payload:
     for id in ids {
         let _span = bevy::log::tracing::info_span!("mods.callback", mod_id = %id, callback).entered();
         manager.call(&id, callback, payload.clone());
+    }
+}
+
+#[cfg(test)]
+mod ground_tests {
+    use super::*;
+
+    #[test]
+    fn the_dynamics_ground_waits_for_something_that_can_use_it() {
+        let dir = std::env::temp_dir().join(format!("skate-mods-ground-{}", std::process::id()));
+        let mut mods = Mods::new(Manager::new(dir.clone(), dir));
+        assert!(!mods.needs_ground());
+        // This world has no physics: building the ground would panic on the missing resource.
+        ensure_ground(&World::new(), &mut mods).unwrap();
+        assert!(!mods.ground_ready && !mods.world.has_ground());
+        mods.bodies.insert(("crates".into(), "box".into()), 7);
+        assert!(mods.needs_ground());
+        mods.bodies.clear();
+        mods.joints.insert(("crates".into(), "hinge".into()), 3);
+        assert!(mods.needs_ground());
     }
 }
