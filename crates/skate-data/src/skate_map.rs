@@ -319,49 +319,80 @@ impl<'a> Reader<'a> {
 struct StoredBlock<'a> { expected: usize, method: u32, bytes: &'a [u8] }
 impl StoredBlock<'_> {
     fn decode(&self) -> Result<Vec<u8>, String> {
-        let Self { expected, method, bytes } = *self;
-        let decoded = match method {
-            0 => bytes.to_vec(),
-            1 => {
-                // Exact size, once. Growing from a small seed doubles past the decoded
-                // size while the previous buffer is still alive: a 140.3 MiB vertex
-                // block asked for 256 MiB and failed on a 3 GiB heap. try_reserve keeps
-                // an over-large declared size a parse error rather than an abort.
-                let mut result = Vec::new();
-                result
-                    .try_reserve_exact(expected)
-                    .map_err(|_| format!("SKATE decoded block of {expected} bytes cannot be reserved"))?;
-                let mut decoder = flate2::read::ZlibDecoder::new(bytes);
-                decoder
-                    .by_ref()
-                    .take(expected as u64 + 1)
-                    .read_to_end(&mut result)
-                    .map_err(|e| format!("SKATE DEFLATE: {e}"))?;
-                if decoder.total_in() as usize != bytes.len() {
-                    return Err("SKATE compressed block has unused input".into());
-                }
-                result
-            }
-            2 => {
-                let mut result = Vec::new();
-                result
-                    .try_reserve_exact(expected)
-                    .map_err(|_| format!("SKATE decoded block of {expected} bytes cannot be reserved"))?;
-                zstd::stream::read::Decoder::new(bytes)
-                    .map_err(|e| e.to_string())?
-                    .take(expected as u64 + 1)
-                    .read_to_end(&mut result)
-                    .map_err(|e| format!("SKATE Zstandard: {e}"))?;
-                result
-            }
-            3..=10 => return storage_v15::decode(method, bytes, expected),
-            _ => return Err(format!("Unsupported SKATE storage method {method}")),
-        };
-        if decoded.len() != expected {
-            return Err("SKATE decoded block size mismatch".into());
+        if (3..=10).contains(&self.method) {
+            return storage_v15::decode(self.method, self.bytes, self.expected);
         }
+        let mut decoded = exact_buffer(self.expected)?;
+        self.decode_into(&mut decoded)?;
         Ok(decoded)
     }
+    /// Appends the block's `expected` decoded bytes to `out`, which should
+    /// already have room for them.
+    fn decode_into(&self, out: &mut Vec<u8>) -> Result<(), String> {
+        let Self { expected, method, bytes } = *self;
+        let start = out.len();
+        let ended = match method {
+            0 => {
+                let ended = bytes.len() == expected;
+                if ended {
+                    out.extend_from_slice(bytes);
+                }
+                ended
+            }
+            1 => {
+                let mut decoder = flate2::read::ZlibDecoder::new(bytes);
+                let ended = read_declared(&mut decoder, expected, out)
+                    .map_err(|e| format!("SKATE DEFLATE: {e}"))?;
+                if ended && decoder.total_in() as usize != bytes.len() {
+                    return Err("SKATE compressed block has unused input".into());
+                }
+                ended
+            }
+            2 => {
+                let mut decoder = zstd::stream::read::Decoder::new(bytes).map_err(|e| e.to_string())?;
+                read_declared(&mut decoder, expected, out).map_err(|e| format!("SKATE Zstandard: {e}"))?
+            }
+            3..=10 => {
+                out.extend_from_slice(&storage_v15::decode(method, bytes, expected)?);
+                true
+            }
+            _ => return Err(format!("Unsupported SKATE storage method {method}")),
+        };
+        if !ended || out.len() - start != expected {
+            return Err("SKATE decoded block size mismatch".into());
+        }
+        Ok(())
+    }
+}
+/// An empty buffer with room for exactly `len` bytes. Growing one from a
+/// smaller start doubles past the final size while the old buffer is still
+/// alive: a 140.3 MiB vertex block asked for 256 MiB and failed on a 3 GiB heap.
+fn exact_buffer(len: usize) -> Result<Vec<u8>, String> {
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(len)
+        .map_err(|_| format!("SKATE decoded block of {len} bytes cannot be reserved"))?;
+    Ok(buffer)
+}
+/// Reads at most `expected` bytes into `out`, then reports whether the stream
+/// ends there, so a block that decodes longer never grows `out`.
+fn read_declared(reader: &mut impl Read, expected: usize, out: &mut Vec<u8>) -> std::io::Result<bool> {
+    reader.by_ref().take(expected as u64).read_to_end(out)?;
+    Ok(reader.read(&mut [0; 1])? == 0)
+}
+/// Decodes `blocks` back to back into one buffer reserved at their joined
+/// size. Extending one block's exact buffer with the next would regrow it to
+/// about twice its size while the old one is still alive.
+fn decode_joined(blocks: &[StoredBlock<'_>]) -> Result<Vec<u8>, String> {
+    let mut total = 0usize;
+    for block in blocks {
+        total = total.checked_add(block.expected).ok_or("SKATE geometry blocks are too large")?;
+    }
+    let mut joined = exact_buffer(total)?;
+    for block in blocks {
+        block.decode_into(&mut joined)?;
+    }
+    Ok(joined)
 }
 impl SkateMap {
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -581,9 +612,12 @@ impl SkateMap {
         let geometry_started = Instant::now();
         let geometry_counts = [counts[2], counts[3], counts[4]];
         let geometry = if version >= 9 {
-            let mut bytes = r.stored(counts[2] as usize * if version >= 12 { 56 } else { 44 })?;
-            bytes.extend(r.stored(counts[3] as usize * 4)?);
-            bytes.extend(r.stored(counts[4] as usize * if version >= 11 { 48 } else { 44 })?);
+            let blocks = [
+                r.stored_block(counts[2] as usize * if version >= 12 { 56 } else { 44 })?,
+                r.stored_block(counts[3] as usize * 4)?,
+                r.stored_block(counts[4] as usize * if version >= 11 { 48 } else { 44 })?,
+            ];
+            let bytes = decode_joined(&blocks)?;
             Reader {
                 bytes: &bytes,
                 at: 0,
@@ -747,5 +781,59 @@ impl SkateMap {
             routes,
             extensions,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn stored(method: u32, data: &[u8]) -> Vec<u8> {
+        match method {
+            0 => data.to_vec(),
+            1 => {
+                let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+                encoder.write_all(data).unwrap();
+                encoder.finish().unwrap()
+            }
+            _ => zstd::stream::encode_all(data, 1).unwrap(),
+        }
+    }
+
+    #[test]
+    fn blocks_decode_into_exactly_their_declared_size() {
+        // Past the 8 MiB the decoder used to start from before doubling.
+        let data: Vec<u8> = (0..9u32 << 20).map(|i| (i % 251) as u8).collect();
+        for method in 0..=2 {
+            let bytes = stored(method, &data);
+            let decoded = StoredBlock { expected: data.len(), method, bytes: &bytes }.decode().unwrap();
+            assert_eq!(decoded, data);
+            assert_eq!(decoded.capacity(), data.len(), "method {method} regrew its buffer");
+        }
+    }
+
+    #[test]
+    fn a_block_that_decodes_longer_fails_without_growing_its_buffer() {
+        for method in 0..=2 {
+            let bytes = stored(method, &[7; 4096]);
+            let mut out = exact_buffer(1024).unwrap();
+            assert!(StoredBlock { expected: 1024, method, bytes: &bytes }.decode_into(&mut out).is_err());
+            assert_eq!(out.capacity(), 1024, "method {method}");
+        }
+    }
+
+    #[test]
+    fn geometry_blocks_decode_into_one_buffer_reserved_once() {
+        let parts: [Vec<u8>; 3] = [(0..60_000u32).map(|i| (i % 253) as u8).collect(), vec![3; 6_000], vec![9; 4_800]];
+        let methods = [1, 2, 0];
+        let stored: Vec<Vec<u8>> = parts.iter().zip(methods).map(|(part, method)| stored(method, part)).collect();
+        let blocks: Vec<StoredBlock<'_>> = parts.iter().zip(&stored).zip(methods)
+            .map(|((part, bytes), method)| StoredBlock { expected: part.len(), method, bytes })
+            .collect();
+        let joined = decode_joined(&blocks).unwrap();
+        assert_eq!(joined, parts.concat());
+        // Extending the first block's buffer would have left it about twice its size.
+        assert_eq!(joined.capacity(), joined.len());
     }
 }

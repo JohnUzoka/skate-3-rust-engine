@@ -1,5 +1,5 @@
 //! Reversible SKATE15 storage transforms, matching the bundled exporter.
-use super::{Reader, StoredBlock};
+use super::{exact_buffer, Reader, StoredBlock};
 
 pub(super) fn decode(method: u32, bytes: &[u8], expected: usize) -> Result<Vec<u8>, String> {
     let mut input = Reader { bytes, at: 0 };
@@ -58,7 +58,9 @@ pub(super) fn decode(method: u32, bytes: &[u8], expected: usize) -> Result<Vec<u
             }
         }
         5 | 9 => {
-            if expected % 4 != 0 { return Err("Invalid SKATE index block size".into()); }
+            // Every index takes at least one varint byte.
+            if expected % 4 != 0 || expected / 4 > data.len() { return Err("Invalid SKATE index block size".into()); }
+            result = exact_buffer(expected)?;
             let mut previous = 0i64;
             for _ in 0..expected / 4 {
                 let mut zigzag = 0u64;
@@ -79,6 +81,9 @@ pub(super) fn decode(method: u32, bytes: &[u8], expected: usize) -> Result<Vec<u
             if expected % 48 != 0 { return Err("Invalid SKATE collision block size".into()); }
             let count = source.u()? as usize;
             let vertices = source.take(count.checked_mul(12).ok_or("SKATE collision vertex overflow")?)?;
+            // Each triangle is three u32 vertex indices and 12 more bytes.
+            if data.len() - source.at != expected / 48 * 24 { return Err("Invalid SKATE collision block size".into()); }
+            result = exact_buffer(expected)?;
             for _ in 0..expected / 48 {
                 for _ in 0..3 {
                     let index = source.u()? as usize;
@@ -133,6 +138,20 @@ mod tests {
             assert_eq!(unpack(4 + shift, &soa, 112).unwrap(), vertices);
             assert_eq!(unpack(5 + shift, &[0, 4, 1], 12).unwrap(), [0u32,2,1].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>());
             assert_eq!(unpack(6 + shift, &collision, 48).unwrap(), expected_collision);
+        }
+    }
+    #[test]
+    fn index_and_collision_transforms_reserve_their_exact_size() {
+        let mut collision = 3u32.to_le_bytes().to_vec();
+        collision.extend([0u8; 36]);
+        for _ in 0..100 {
+            for index in [0u32, 1, 2] { collision.extend(index.to_le_bytes()); }
+            collision.extend([0u8; 12]);
+        }
+        for shift in [0, 4] {
+            // Zigzag 2 is a delta of +1, so the indices count up from 1.
+            assert_eq!(unpack(5 + shift, &[2; 1000], 4000).unwrap().capacity(), 4000);
+            assert_eq!(unpack(6 + shift, &collision, 4800).unwrap().capacity(), 4800);
         }
     }
     #[test]
