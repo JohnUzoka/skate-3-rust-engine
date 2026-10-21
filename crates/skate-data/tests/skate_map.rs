@@ -261,6 +261,24 @@ fn rejects_future_versions_endianness_nonfinite_and_huge_counts() {
     assert!(SkateMap::parse(&bad).is_err());
 }
 #[test]
+fn rejects_blocks_declaring_more_than_their_bytes_can_hold() {
+    // Version 13 stores every block with deflate.
+    let data = fixture(13);
+    let mut needle = Vec::new();
+    s(&mut needle, "Pixel");
+    let width = data.windows(needle.len()).position(|w| w == needle).unwrap() + needle.len();
+    let mut bad = data.clone();
+    for at in [width, width + 4] {
+        bad[at..at + 4].copy_from_slice(&8192u32.to_le_bytes());
+    }
+    assert!(SkateMap::parse(&bad).unwrap_err().contains("declares"));
+    // 19 million vertices, about 1 GiB, from a block of a few dozen bytes.
+    let vertex_count = 8 + 4 + 4 + "Fixture".len() + 49 * 4 + 8;
+    let mut bad = data;
+    bad[vertex_count..vertex_count + 4].copy_from_slice(&19_000_000u32.to_le_bytes());
+    assert!(SkateMap::parse(&bad).unwrap_err().contains("declares"));
+}
+#[test]
 fn rejects_bad_vertex_and_material_references() {
     let data = fixture(1);
     // Locate the known three-index sequence immediately before collision data.

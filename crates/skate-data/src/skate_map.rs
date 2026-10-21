@@ -318,7 +318,34 @@ impl<'a> Reader<'a> {
 #[derive(Clone, Copy)]
 struct StoredBlock<'a> { expected: usize, method: u32, bytes: &'a [u8] }
 impl StoredBlock<'_> {
+    /// Rejects a declared size the stored bytes could never decode to, before
+    /// anything is reserved for it. Deflate writes at most 1032 bytes per stored
+    /// byte (two bits per 258-byte match), Zstandard at most 32768 (four bytes
+    /// per RLE block of up to 128 KiB). A SKATE15 transform writes at most four
+    /// bytes per byte of its payload (an index varint is at least one byte), and
+    /// the payload follows a 4-byte size as Zstandard (3..=6) or deflate (7..=10).
+    fn check_size(&self) -> Result<(), String> {
+        let most = |method: u32, stored: usize| match method {
+            0 => stored,
+            1 => stored.saturating_mul(1032),
+            _ => stored.saturating_mul(32768),
+        };
+        let limit = match self.method {
+            0..=2 => most(self.method, self.bytes.len()),
+            3..=10 => most(if self.method <= 6 { 2 } else { 1 }, self.bytes.len().saturating_sub(4)).saturating_mul(4),
+            _ => return Ok(()),
+        };
+        if self.expected > limit {
+            return Err(format!(
+                "SKATE block declares {} bytes, more than its {} stored bytes can decode to",
+                self.expected,
+                self.bytes.len()
+            ));
+        }
+        Ok(())
+    }
     fn decode(&self) -> Result<Vec<u8>, String> {
+        self.check_size()?;
         if (3..=10).contains(&self.method) {
             return storage_v15::decode(self.method, self.bytes, self.expected);
         }
@@ -329,6 +356,7 @@ impl StoredBlock<'_> {
     /// Appends the block's `expected` decoded bytes to `out`, which should
     /// already have room for them.
     fn decode_into(&self, out: &mut Vec<u8>) -> Result<(), String> {
+        self.check_size()?;
         let Self { expected, method, bytes } = *self;
         let start = out.len();
         let ended = match method {
@@ -386,6 +414,7 @@ fn read_declared(reader: &mut impl Read, expected: usize, out: &mut Vec<u8>) -> 
 fn decode_joined(blocks: &[StoredBlock<'_>]) -> Result<Vec<u8>, String> {
     let mut total = 0usize;
     for block in blocks {
+        block.check_size()?;
         total = total.checked_add(block.expected).ok_or("SKATE geometry blocks are too large")?;
     }
     let mut joined = exact_buffer(total)?;
@@ -835,5 +864,19 @@ mod tests {
         assert_eq!(joined, parts.concat());
         // Extending the first block's buffer would have left it about twice its size.
         assert_eq!(joined.capacity(), joined.len());
+    }
+
+    #[test]
+    fn a_tiny_block_declaring_1_gib_fails_without_reserving_it() {
+        for method in 0..=10 {
+            let bytes = stored(method.min(2), &[0; 16]);
+            let block = StoredBlock { expected: 1 << 30, method, bytes: &bytes };
+            let mut out = Vec::new();
+            let error = block.decode_into(&mut out).unwrap_err();
+            assert!(error.contains("declares"), "method {method}: {error}");
+            assert_eq!(out.capacity(), 0, "method {method}");
+            assert!(block.decode().unwrap_err().contains("declares"), "method {method}");
+            assert!(decode_joined(&[block]).unwrap_err().contains("declares"), "method {method}");
+        }
     }
 }

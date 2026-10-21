@@ -23,6 +23,10 @@ pub(super) fn decode(method: u32, bytes: &[u8], expected: usize) -> Result<Vec<u
             if row.checked_mul(height) != Some(expected) || width > 16384 || height > 16384 {
                 return Err("SKATE filtered dimensions mismatch".into());
             }
+            // Checked before the image is allocated: eight bytes can declare 1 GiB.
+            if data.len() != 8 + height * (row + 1) {
+                return Err("SKATE filtered rows do not match their dimensions".into());
+            }
             result.resize(expected, 0u8);
             for y in 0..height {
                 let filter = source.take(1)?[0];
@@ -152,6 +156,14 @@ mod tests {
             // Zigzag 2 is a delta of +1, so the indices count up from 1.
             assert_eq!(unpack(5 + shift, &[2; 1000], 4000).unwrap().capacity(), 4000);
             assert_eq!(unpack(6 + shift, &collision, 4800).unwrap().capacity(), 4800);
+        }
+    }
+    #[test]
+    fn filtered_rows_are_checked_before_the_image_is_allocated() {
+        let mut dimensions = 16384u32.to_le_bytes().to_vec();
+        dimensions.extend(16384u32.to_le_bytes());
+        for method in [3, 7] {
+            assert!(unpack(method, &dimensions, 16384 * 16384 * 4).unwrap_err().contains("rows"));
         }
     }
     #[test]
