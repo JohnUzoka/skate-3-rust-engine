@@ -430,8 +430,15 @@ fn retail_collision_world(
     archive: &[u8],
     material: RetailContactMaterial,
 ) -> Result<BoardWorld, String> {
+    // Reserved once from the mesh headers: pushing Downtown's 1.5 million 128-byte
+    // triangles one at a time doubles the list to 256 MiB while the 128 MiB copy is
+    // still alive.
+    let capacity = skate_data::retail_collision::triangle_capacity(archive)?;
     let mut triangles = Vec::new();
     let mut packed_surfaces = Vec::new();
+    triangles.try_reserve_exact(capacity)
+        .and_then(|()| packed_surfaces.try_reserve_exact(capacity))
+        .map_err(|_| format!("RWCM collision of {capacity} triangles cannot be reserved"))?;
     let mut meshes = Vec::new();
     let count = skate_data::retail_collision::visit_clusters(archive, |_, cluster| {
         // Preserve cluster order and partition further only for group filters.
@@ -516,8 +523,8 @@ pub(crate) fn collision_world(
     // edge pairing. Triangle diagonals are adjacency, never authored ledges.
     let mut welded = HashMap::<[i64; 3], usize>::new();
     let mut positions = Vec::<Vec3>::new();
-    let mut vertices = Vec::new();
-    let mut normals = Vec::new();
+    let mut vertices = Vec::with_capacity(map.geometry.collision.len());
+    let mut normals = Vec::with_capacity(map.geometry.collision.len());
     for tri in &map.geometry.collision {
         let ids = tri.points.map(|p| {
             let inverse = 1.0 / f64::from(0.001_f32);

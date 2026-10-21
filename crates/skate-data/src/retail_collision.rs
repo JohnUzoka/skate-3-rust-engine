@@ -83,6 +83,32 @@ pub fn visit_clusters(
     Ok(total)
 }
 
+/// The triangle total the archive's mesh headers declare: at least what
+/// [`visit_clusters`] visits (it skips surfaceless volume meshes), so a caller
+/// can reserve its triangle list once instead of letting it double. Each
+/// triangle unit takes at least four bytes, which bounds a damaged header.
+pub fn triangle_capacity(data: &[u8]) -> Result<usize, String> {
+    if span(data, 0, 8)? != b"RWCMSET1" {
+        return Err("Invalid RWCMSET1 magic".into());
+    }
+    let mut at = 8;
+    let count = le32(data, &mut at)?;
+    let mut total = 0usize;
+    for _ in 0..count {
+        let size = le32(data, &mut at)?;
+        at = at.checked_add(size).ok_or("RWCM offset overflow")?;
+        let size = le32(data, &mut at)?;
+        let mesh = span(data, at, size)?;
+        at += size;
+        let declared = be32(mesh, 40)? as usize;
+        if declared > mesh.len() / 4 {
+            return Err("Invalid RWCM triangle count".into());
+        }
+        total += declared;
+    }
+    Ok(total)
+}
+
 fn mesh_clusters(
     data: &[u8],
     visit: &mut impl FnMut(&[RetailTriangle]) -> Result<(), String>,

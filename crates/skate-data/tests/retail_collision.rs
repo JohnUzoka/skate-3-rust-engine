@@ -1,4 +1,4 @@
-use skate_data::retail_collision::visit_clusters;
+use skate_data::retail_collision::{triangle_capacity, visit_clusters};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/retail-collision.rwcmset");
 
@@ -103,6 +103,22 @@ fn skips_meshes_without_any_surface_ids() {
 }
 
 #[test]
+fn triangle_capacity_reads_the_declared_counts_without_decoding() {
+    assert_eq!(triangle_capacity(FIXTURE).unwrap(), 3);
+    // A surfaceless mesh is declared but not visited, so the capacity can exceed
+    // what `visit_clusters` returns, never fall short of it.
+    let mut bytes = FIXTURE.to_vec();
+    strip_surface(&mut bytes, 1);
+    assert_eq!(triangle_capacity(&bytes).unwrap(), 3);
+    // A damaged count can't ask for more triangles than its mesh has bytes for.
+    let name_len = u32::from_le_bytes(FIXTURE[12..16].try_into().unwrap()) as usize;
+    let mesh = 12 + 4 + name_len + 4;
+    let mut bytes = FIXTURE.to_vec();
+    bytes[mesh + 40..mesh + 44].copy_from_slice(&u32::MAX.to_be_bytes());
+    assert!(triangle_capacity(&bytes).is_err());
+}
+
+#[test]
 fn rejects_every_truncated_prefix_and_trailing_bytes() {
     for end in 0..FIXTURE.len() {
         assert!(
@@ -122,5 +138,6 @@ fn private_archive_decodes_all_clusters() {
     let bytes = std::fs::read(path).unwrap();
     let count = visit_clusters(&bytes, |_, _| Ok(())).unwrap();
     assert!(count > 0);
+    assert!(triangle_capacity(&bytes).unwrap() >= count);
     eprintln!("RWCM triangles decoded: {count}");
 }
