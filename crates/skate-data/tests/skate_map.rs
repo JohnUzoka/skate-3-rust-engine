@@ -261,6 +261,15 @@ fn rejects_future_versions_endianness_nonfinite_and_huge_counts() {
     assert!(SkateMap::parse(&bad).is_err());
 }
 #[test]
+fn parsed_geometry_is_reserved_at_its_exact_length() {
+    for version in [1, 8, 9, 12, 15] {
+        let geometry = SkateMap::parse(&fixture(version)).unwrap().geometry;
+        assert_eq!(geometry.vertices.capacity(), geometry.vertices.len(), "v{version}");
+        assert_eq!(geometry.indices.capacity(), geometry.indices.len(), "v{version}");
+        assert_eq!(geometry.collision.capacity(), geometry.collision.len(), "v{version}");
+    }
+}
+#[test]
 fn rejects_blocks_declaring_more_than_their_bytes_can_hold() {
     // Version 13 stores every block with deflate.
     let data = fixture(13);
