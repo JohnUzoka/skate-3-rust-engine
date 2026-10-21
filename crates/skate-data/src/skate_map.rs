@@ -323,7 +323,14 @@ impl StoredBlock<'_> {
         let decoded = match method {
             0 => bytes.to_vec(),
             1 => {
-                let mut result = Vec::with_capacity(expected.min(8 * 1024 * 1024));
+                // Exact size, once. Growing from a small seed doubles past the decoded
+                // size while the previous buffer is still alive: a 140.3 MiB vertex
+                // block asked for 256 MiB and failed on a 3 GiB heap. try_reserve keeps
+                // an over-large declared size a parse error rather than an abort.
+                let mut result = Vec::new();
+                result
+                    .try_reserve_exact(expected)
+                    .map_err(|_| format!("SKATE decoded block of {expected} bytes cannot be reserved"))?;
                 let mut decoder = flate2::read::ZlibDecoder::new(bytes);
                 decoder
                     .by_ref()
@@ -336,7 +343,10 @@ impl StoredBlock<'_> {
                 result
             }
             2 => {
-                let mut result = Vec::with_capacity(expected.min(8 * 1024 * 1024));
+                let mut result = Vec::new();
+                result
+                    .try_reserve_exact(expected)
+                    .map_err(|_| format!("SKATE decoded block of {expected} bytes cannot be reserved"))?;
                 zstd::stream::read::Decoder::new(bytes)
                     .map_err(|e| e.to_string())?
                     .take(expected as u64 + 1)
