@@ -142,6 +142,16 @@ pub(crate) fn build(
         verification::VerificationPlugin,
         crate::performance::PerformancePlugin,
     ));
+    // On the Switch, the GPU's time for each frame and the wait for the window's next image, in
+    // log.txt every 10 s, to tell a slower GPU from a starved swapchain (findings 59 §18).
+    // `SKATE_PERF_GPU=1` adds the same plugin with the pass timers; `SKATE_GPU_FRAME_LOG=0` leaves
+    // it out.
+    #[cfg(target_os = "horizon")]
+    if std::env::var("SKATE_PERF_GPU").as_deref() != Ok("1")
+        && std::env::var("SKATE_GPU_FRAME_LOG").map_or(true, |v| v.trim() != "0")
+    {
+        app.add_plugins(crate::gpu_frame_time::GpuFrameTimePlugin);
+    }
     app.add_plugins((crate::session_marker::SessionMarkerPlugin, crate::customiser::CustomiserPlugin));
     app.add_plugins(crate::custom_models::CustomModelsPlugin);
     app.add_plugins(crate::trigger_volumes::TriggerVolumesPlugin);

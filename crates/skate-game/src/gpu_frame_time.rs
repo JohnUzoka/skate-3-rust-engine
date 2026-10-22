@@ -56,7 +56,14 @@ impl Plugin for GpuFrameTimePlugin {
         let latest = Latest::default();
         app.insert_resource(latest.clone()).add_systems(PreUpdate, publish);
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
-            render.insert_resource(latest);
+            render.insert_resource(latest).init_resource::<Acquire>().add_systems(
+                Render,
+                (
+                    acquire_started.before(bevy::render::view::prepare_windows),
+                    acquire_finished.after(bevy::render::view::prepare_windows),
+                )
+                    .in_set(RenderSystems::ManageViews),
+            );
         }
     }
 
@@ -220,10 +227,75 @@ fn read_back(mut stamps: ResMut<Stamps>) {
     });
 }
 
-fn publish(latest: Res<Latest>, mut store: ResMut<DiagnosticsStore>) {
+/// Ten seconds of one measurement, for a `[GPU]` line in log.txt.
+#[derive(Default)]
+struct Averages {
+    since: Option<Instant>,
+    frames: u32,
+    total: f64,
+    worst: f64,
+}
+
+impl Averages {
+    /// Adds a frame's `ms`; after ten seconds, the frames, their average and the worst.
+    fn add(&mut self, ms: f64) -> Option<(u32, f64, f64)> {
+        let now = Instant::now();
+        let since = *self.since.get_or_insert(now);
+        self.frames += 1;
+        self.total += ms;
+        self.worst = self.worst.max(ms);
+        if now.duration_since(since).as_secs() < 10 {
+            return None;
+        }
+        let window = (self.frames, self.total / f64::from(self.frames), self.worst);
+        *self = Self { since: Some(now), ..default() };
+        Some(window)
+    }
+}
+
+/// Each frame's wait for the window's next image: Bevy's `prepare_windows` acquires it, and
+/// waits there while every image is still the GPU's or the screen's.
+#[derive(Resource, Default)]
+struct Acquire {
+    started: Option<Instant>,
+    waits: Averages,
+}
+
+fn acquire_started(mut acquire: ResMut<Acquire>) {
+    acquire.started = Some(Instant::now());
+}
+
+fn acquire_finished(mut acquire: ResMut<Acquire>) {
+    let Some(started) = acquire.started.take() else {
+        return;
+    };
+    if let Some((frames, average, worst)) = acquire.waits.add(started.elapsed().as_secs_f64() * 1e3) {
+        info!(
+            "[GPU] the window's next image took {average:.2} ms on average to come over the last {frames} frames, {worst:.2} ms at worst (prepare_windows)"
+        );
+    }
+}
+
+fn publish(
+    latest: Res<Latest>,
+    mut store: ResMut<DiagnosticsStore>,
+    mut busy: Local<Averages>,
+    mut idle: Local<(f64, u32)>,
+) {
     let Some(frame) = latest.0.lock().ok().and_then(|mut latest| latest.take()) else {
         return;
     };
+    if let Some(wait) = frame.wait {
+        idle.0 += wait;
+        idle.1 += 1;
+    }
+    if let Some((frames, average, worst)) = busy.add(frame.busy) {
+        let idle = std::mem::take(&mut *idle);
+        info!(
+            "[GPU] {frames} frames timed: busy {average:.2} ms on average ({worst:.2} at worst), idle {:.2} ms before each",
+            if idle.1 == 0 { 0. } else { idle.0 / f64::from(idle.1) },
+        );
+    }
     let time = Instant::now();
     for (path, value) in [(&BUSY, Some(frame.busy)), (&WAIT, frame.wait)] {
         let Some(value) = value else {

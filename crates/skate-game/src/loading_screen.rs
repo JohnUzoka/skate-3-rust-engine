@@ -3,12 +3,13 @@
 //! loading with the seconds since the load began, and the last four finished steps dimmed below.
 //! Here it is twice her splash's size, in the middle of the screen.
 //!
-//! Bevy's UI draws it over the start map's load, which on the Switch runs in the background, and
-//! over every map change. Hidden, it leaves the layout too (`Display::None`), so once a world is
-//! up it costs the game nothing. `SKATE_EARLY_SPLASH=1` also puts it up from the first moment of
-//! `main` ([`show_early_splash`]), through a libnx framebuffer; off by default, as the game then ran
-//! at 20 fps in game where it ran at 33.7 without it (findings 59 §14, §16). The screen stays up
-//! until the published world is on the GPU, so nothing pops in once it goes: every mesh, image and
+//! On the Switch it is up from the first moment of `main` ([`show_early_splash`]): bevy_horizon
+//! redraws it into a libnx framebuffer from a thread of its own, and it holds the screen through
+//! the start map's load, which runs in the background; then the game draws on a display layer of
+//! its own (bevy_horizon `splash::game_window`). Bevy's UI draws the same layout over every map
+//! change. Hidden, it leaves the layout too (`Display::None`), so once a world is up it costs the
+//! game nothing. The screen stays up until the published world is on the GPU, so nothing pops in
+//! once it goes: every mesh, image and
 //! storage buffer the scene published is ready in the render world (meshes bevy_horizon holds back
 //! for later frames aren't), and no shader pipeline is still compiling, for a few frames in a row
 //! (findings 59).
@@ -200,15 +201,17 @@ fn since_launch() -> f32 {
     crate::since_launch_ms() as f32 / 1000.
 }
 
-/// With `SKATE_EARLY_SPLASH=1`, puts the loading screen up from the first moment of the start,
-/// before the window exists (bevy_horizon's splash, a libnx framebuffer). With the start map
-/// loading in the background the splash holds the screen until that world is on the GPU
-/// (`release_splash` lets go), drawn on a thread of its own however busy the game is. Off by
-/// default: after the splash the game ran at 20 fps in game, with the splash's pixel format put
-/// back and with three buffers, where it ran at 33.7 without it (findings 59 §14, §16).
+/// Puts the loading screen up from the first moment of the start, before the window exists
+/// (bevy_horizon's splash, a libnx framebuffer). With the start map loading in the background the
+/// splash holds the screen until that world is on the GPU (`release_splash` lets go), drawn on a
+/// thread of its own however busy the game is. With the swapchain on the window the splash had
+/// used, the game ran at 20 fps in game where it ran at 33.7 without the splash (findings 59 §14,
+/// §16), so the game then draws on a layer of its own (§18). `SKATE_EARLY_SPLASH=0` leaves the
+/// screen black until the first frame.
 #[cfg(target_os = "horizon")]
 pub(crate) fn show_early_splash() {
-    if !std::env::var("SKATE_EARLY_SPLASH").is_ok_and(|v| v.trim() == "1") {
+    if std::env::var("SKATE_EARLY_SPLASH").is_ok_and(|v| v.trim() == "0") {
+        eprintln!("[Skate] SKATE_EARLY_SPLASH=0: no start-up splash; the screen stays black until the first frame");
         return;
     }
     let started = Instant::now();
