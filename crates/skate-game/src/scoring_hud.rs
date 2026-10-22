@@ -87,7 +87,7 @@ struct Hud {
     generation: u64,
     failed: bool,
     /// The camera that draws the slots into `target`, and the node that lays `target` over the
-    /// screen (`setup`).
+    /// screen (`finish_setup`).
     camera: Entity,
     composite_node: Entity,
     /// Whether the slots drew anything last frame, and whether `camera` and `composite_node`
@@ -141,55 +141,107 @@ impl Plugin for ScoringHudPlugin {
         )
         .add_systems(
             Update,
-            (resize_target, reset, render)
+            (finish_setup, resize_target, reset, render)
                 .chain()
                 .after(crate::app::FrameSet::Physics),
         );
     }
 }
-fn setup(
+/// What the HUD reads from the SD card. Read on a thread of its own (`setup`): read in
+/// `PostStartup`, beside the start map's and the audio's loaders, it held the first frame back
+/// 2.4-6.1 s on the Switch (sk8 findings 59 §16).
+struct HudFiles {
+    runtime: hud_runtime::Runtime,
+    source: serde_json::Value,
+    shapes: apt_scene::Shapes,
+    /// Each texture's path, size and RGBA8 pixels.
+    textures: Vec<(String, [u32; 2], Vec<u8>)>,
+}
+
+/// The HUD's files being read, from `setup` until `finish_setup` builds the HUD from them.
+#[derive(Resource)]
+struct PendingHud {
+    root: PathBuf,
+    job: Option<std::thread::JoinHandle<Result<HudFiles, String>>>,
+}
+
+fn read_files(root: &std::path::Path, input: hud_runtime::Input) -> Result<HudFiles, String> {
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("runtime/trickdisplay.json"))
+            .map_err(|e| format!("{}: {e}", root.display()))?,
+    )
+    .map_err(|e| e.to_string())?;
+    let runtime = hud_runtime::Runtime::load(&source, input)?;
+    let shapes: apt_scene::Shapes =
+        serde_json::from_value(source["shapes"].clone()).map_err(|e| e.to_string())?;
+    let mut files = BTreeMap::new();
+    for texture in shapes.values().flatten().filter_map(|s| s.texture.as_ref()) {
+        files.insert(texture.rgba.clone(), [texture.width, texture.height]);
+    }
+    for font in runtime.bindings.movie.text_assets.fonts.values() {
+        files.insert(font.texture.clone(), font.size);
+        if let Some(fg) = &font.foreground {
+            files.insert(fg.texture.clone(), fg.size);
+        }
+    }
+    let mut textures = Vec::with_capacity(files.len());
+    for (path, size) in files {
+        let bytes = std::fs::read(root.join(&path)).map_err(|e| format!("HUD {path}: {e}"))?;
+        if bytes.len() != size[0] as usize * size[1] as usize * 4 {
+            return Err(format!("Invalid HUD texture size {path}"));
+        }
+        textures.push((path, size, bytes));
+    }
+    Ok(HudFiles { runtime, source, shapes, textures })
+}
+
+fn setup(mut commands: Commands, config: Res<Config>, skater: Res<SkaterRuntime>) {
+    let root = std::env::var_os("SKATE_SCORING_HUD_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config.asset_root.join("private/hud"));
+    let input = skater.scoring.hud_input();
+    let reading = root.clone();
+    match std::thread::Builder::new().name("hud-files".into()).spawn(move || read_files(&reading, input)) {
+        Ok(job) => commands.insert_resource(PendingHud { root, job: Some(job) }),
+        Err(error) => error!("Original scoring HUD could not load from {}: no thread ({error})", root.display()),
+    }
+}
+
+/// Builds the HUD once `setup`'s thread has read its files.
+fn finish_setup(
     mut commands: Commands,
-    config: Res<Config>,
-    skater: Res<SkaterRuntime>,
+    pending: Option<ResMut<PendingHud>>,
     cameras: Query<Entity, With<IsDefaultUiCamera>>,
     window: Single<&Window, With<PrimaryWindow>>,
     mut images: ResMut<Assets<Image>>,
     mut composites: ResMut<Assets<HudComposite>>,
 ) {
-    // The startup dependency also applies the presentation system's deferred
-    // camera spawn before this query. Without it, setup silently lost the HUD.
+    let Some(mut pending) = pending else { return };
+    if pending.job.as_ref().is_some_and(|job| !job.is_finished()) {
+        return;
+    }
+    commands.remove_resource::<PendingHud>();
+    let root = std::mem::take(&mut pending.root);
+    let Some(job) = pending.job.take() else { return };
+    let files = match job.join() {
+        Ok(Ok(files)) => files,
+        Ok(Err(error)) => {
+            error!("Original scoring HUD could not load from {}: {error}. See docs/hud-installation.md", root.display());
+            return;
+        }
+        Err(_) => {
+            error!("Original scoring HUD could not load from {}: its thread panicked", root.display());
+            return;
+        }
+    };
     let Ok(output) = cameras.single() else {
         error!("Original HUD requires the presentation camera");
         return;
     };
-    let root = std::env::var_os("SKATE_SCORING_HUD_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config.asset_root.join("private/hud"));
-    let result = (|| -> Result<Hud, String> {
-        let source: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(root.join("runtime/trickdisplay.json"))
-                .map_err(|e| format!("{}: {e}", root.display()))?,
-        )
-        .map_err(|e| e.to_string())?;
-        let runtime = hud_runtime::Runtime::load(&source, skater.scoring.hud_input())?;
-        let shapes: apt_scene::Shapes =
-            serde_json::from_value(source["shapes"].clone()).map_err(|e| e.to_string())?;
-        let mut files = BTreeMap::new();
-        for texture in shapes.values().flatten().filter_map(|s| s.texture.as_ref()) {
-            files.insert(texture.rgba.clone(), [texture.width, texture.height]);
-        }
-        for font in runtime.bindings.movie.text_assets.fonts.values() {
-            files.insert(font.texture.clone(), font.size);
-            if let Some(fg) = &font.foreground {
-                files.insert(fg.texture.clone(), fg.size);
-            }
-        }
-        let mut textures = BTreeMap::new();
-        for (path, size) in files {
-            let bytes = std::fs::read(root.join(&path)).map_err(|e| format!("HUD {path}: {e}"))?;
-            if bytes.len() != size[0] as usize * size[1] as usize * 4 {
-                return Err(format!("Invalid HUD texture size {path}"));
-            }
+    let textures = files
+        .textures
+        .into_iter()
+        .map(|(path, size, bytes)| {
             let image = Image::new(
                 Extent3d {
                     width: size[0],
@@ -201,90 +253,81 @@ fn setup(
                 TextureFormat::Rgba8UnormSrgb,
                 RenderAssetUsages::RENDER_WORLD,
             );
-            textures.insert(path, images.add(image));
-        }
-        Ok(Hud {
-            target: Handle::default(),
-            composite: Handle::default(),
-            rebind_after_resize: false,
-            runtime,
-            source,
-            shapes,
-            textures,
-            slots: Vec::new(),
-            generation: 0,
-            failed: false,
-            camera: Entity::PLACEHOLDER,
-            composite_node: Entity::PLACEHOLDER,
-            drawn: false,
-            camera_on: true,
-            node_on: true,
-            rect: None,
-            rect_changes: 0,
-            demo_shown: false,
+            (path, images.add(image))
         })
-    })();
-    match result {
-        Ok(mut hud) => {
-            let target = images.add(Image::new_target_texture(
-                window.physical_width().max(1),
-                window.physical_height().max(1),
-                TextureFormat::Rgba8UnormSrgb,
-                None,
-            ));
-            hud.target = target.clone();
-            hud.camera = commands
-                .spawn((
-                    Camera2d,
-                    Projection::Orthographic(OrthographicProjection {
-                        scaling_mode: ScalingMode::Fixed {
-                            width: 1280.,
-                            height: 720.,
-                        },
-                        ..OrthographicProjection::default_2d()
-                    }),
-                    Camera {
-                        // Before the gameplay camera, which draws the composite itself when it
-                        // draws into the window (graphics_menu.rs `choose_presentation`): at one
-                        // order, the cameras that draw into a window go first.
-                        order: -2,
-                        clear_color: ClearColorConfig::Custom(Color::NONE),
-                        ..default()
-                    },
-                    RenderTarget::Image(target.clone().into()),
-                    RenderLayers::layer(31),
-                    Msaa::Off,
-                ))
-                .id();
-            hud.composite = composites.add(HudComposite {
-                image: target,
-                load: 0,
-            });
-            hud.composite_node = commands
-                .spawn((
-                    MaterialNode(hud.composite.clone()),
-                    UiTargetCamera(output),
-                    GlobalZIndex(1),
-                    Pickable::IGNORE,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        width: percent(100),
-                        height: percent(100),
-                        ..default()
-                    },
-                ))
-                .id();
-            commands.insert_resource(hud);
-            info!("Original scoring HUD loaded from {}", root.display());
-        }
-        Err(error) => error!(
-            "Original scoring HUD could not load from {}: {error}. See docs/hud-installation.md",
-            root.display()
-        ),
-    }
+        .collect();
+    let mut hud = Hud {
+        target: Handle::default(),
+        composite: Handle::default(),
+        rebind_after_resize: false,
+        runtime: files.runtime,
+        source: files.source,
+        shapes: files.shapes,
+        textures,
+        slots: Vec::new(),
+        generation: 0,
+        failed: false,
+        camera: Entity::PLACEHOLDER,
+        composite_node: Entity::PLACEHOLDER,
+        drawn: false,
+        camera_on: true,
+        node_on: true,
+        rect: None,
+        rect_changes: 0,
+        demo_shown: false,
+    };
+    let target = images.add(Image::new_target_texture(
+        window.physical_width().max(1),
+        window.physical_height().max(1),
+        TextureFormat::Rgba8UnormSrgb,
+        None,
+    ));
+    hud.target = target.clone();
+    hud.camera = commands
+        .spawn((
+            Camera2d,
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::Fixed {
+                    width: 1280.,
+                    height: 720.,
+                },
+                ..OrthographicProjection::default_2d()
+            }),
+            Camera {
+                // Before the gameplay camera, which draws the composite itself when it
+                // draws into the window (graphics_menu.rs `choose_presentation`): at one
+                // order, the cameras that draw into a window go first.
+                order: -2,
+                clear_color: ClearColorConfig::Custom(Color::NONE),
+                ..default()
+            },
+            RenderTarget::Image(target.clone().into()),
+            RenderLayers::layer(31),
+            Msaa::Off,
+        ))
+        .id();
+    hud.composite = composites.add(HudComposite {
+        image: target,
+        load: 0,
+    });
+    hud.composite_node = commands
+        .spawn((
+            MaterialNode(hud.composite.clone()),
+            UiTargetCamera(output),
+            GlobalZIndex(1),
+            Pickable::IGNORE,
+            Node {
+                position_type: PositionType::Absolute,
+                width: percent(100),
+                height: percent(100),
+                ..default()
+            },
+        ))
+        .id();
+    commands.insert_resource(hud);
+    info!("Original scoring HUD loaded from {}", root.display());
 }
-// Rasterize at output pixel resolution; retain the original 1280x720 APT
-// coordinate space. This avoids a second enlargement of every glyph/glow.
+
 fn resize_target(
     hud: Option<ResMut<Hud>>,
     window: Single<&Window, With<PrimaryWindow>>,
