@@ -129,10 +129,18 @@ fn bind(
     visibility: Query<&Visibility>,
     roots: Query<Entity, With<PlayerRoot>>,
     mut exit: MessageWriter<AppExit>,
+    // Since when it has waited to bind, and whether it has said why.
+    mut waiting: Local<Option<(std::time::Instant, bool)>>,
 ) {
-    if *status != AssetStatus::Ready || animation.ready {
+    // Not gated on `AssetStatus::Ready`: the skins below are the character's spawned scene, so
+    // they are enough. On the Switch, starting with the map loading in the background, the
+    // character's asset sometimes never counted as loaded with its dependencies, the skater
+    // stayed in its bind pose (findings 59 §14), and nothing said why.
+    if *status == AssetStatus::Failed || animation.ready {
+        *waiting = None;
         return;
     }
+    let (since, warned) = waiting.get_or_insert_with(|| (std::time::Instant::now(), false));
     let names = &skater.animation.evaluator.frames.bone_names;
     let result = (|| -> Result<Option<Vec<BoneBinding>>, String> {
         let mut bindings = Vec::new();
@@ -192,9 +200,27 @@ fn bind(
             animation.bindings = binding;
             animation.ready = true;
             info!(
-                "GAME_CHARACTER_READY bones={} source=physical_stock_pose",
-                animation.bindings.len()
+                "GAME_CHARACTER_READY bones={} source=physical_stock_pose{}",
+                animation.bindings.len(),
+                if *status == AssetStatus::Ready { "" } else { ", before its asset counted as loaded" }
             );
+        }
+        Ok(None) if !*warned && since.elapsed() >= std::time::Duration::from_secs(10) => {
+            let (mut under_player, mut hidden) = (0, 0);
+            for (entity, _) in &skins {
+                if parents.iter_ancestors(entity).any(|e| roots.contains(e)) {
+                    under_player += 1;
+                    if parents.iter_ancestors(entity).any(|e| visibility.get(e).is_ok_and(|v| *v == Visibility::Hidden)) {
+                        hidden += 1;
+                    }
+                }
+            }
+            warn!(
+                "GAME_CHARACTER not bound after 10 s: {} skins in all, {under_player} under the player, {hidden} of them hidden; the character's asset {}",
+                skins.iter().count(),
+                if *status == AssetStatus::Ready { "is loaded" } else { "hasn't counted as loaded with its dependencies" },
+            );
+            *warned = true;
         }
         Ok(None) => (),
         Err(message) => {
