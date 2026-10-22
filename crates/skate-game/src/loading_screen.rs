@@ -5,14 +5,14 @@
 //!
 //! On the Switch it is up from the first moment of `main` ([`show_early_splash`]): bevy_horizon
 //! redraws it into a libnx framebuffer from a thread of its own, and it holds the screen through
-//! the start map's load, which runs in the background; then the game draws on a display layer of
-//! its own (bevy_horizon `splash::game_window`). Bevy's UI draws the same layout over every map
-//! change. Hidden, it leaves the layout too (`Display::None`), so once a world is up it costs the
-//! game nothing. The screen stays up until the published world is on the GPU, so nothing pops in
-//! once it goes: every mesh, image and
-//! storage buffer the scene published is ready in the render world (meshes bevy_horizon holds back
-//! for later frames aren't), and no shader pipeline is still compiling, for a few frames in a row
-//! (findings 59).
+//! the start map's load, which runs in the background; then the game's swapchain takes the
+//! window, after bevy_horizon has unregistered the splash's buffers from it, with a fourth image
+//! (findings 59 §20). Bevy's UI draws the same layout over every map change. Hidden, it leaves
+//! the layout too (`Display::None`), so once a world is up it costs the game nothing. The screen
+//! stays up until the published world is on the GPU, so nothing pops in once it goes: every mesh,
+//! image and storage buffer the scene published is ready in the render world (meshes bevy_horizon
+//! holds back for later frames aren't), and no shader pipeline is still compiling, for a few
+//! frames in a row (findings 59).
 //!
 //! Once a world is committed it runs behind the screen, so its first frames render and their
 //! pipelines compile, but the player's input doesn't reach it (`input::publish_actions`). The
