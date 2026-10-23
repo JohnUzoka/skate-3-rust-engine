@@ -27,6 +27,21 @@ pub(in crate::physics::solver) fn xyz(values: [f32; 4]) -> Vector3 {
     Vector3::new(values[0], values[1], values[2])
 }
 
+/// A reaction record's four columns as floats while packed.rs solves: the velocity-producing
+/// corrections (linear at 0, angular at 32) and the contact-only pose corrections (16, 48).
+pub(in crate::physics::solver) type Body = [[f32; 4]; 4];
+
+pub(in crate::physics::solver) fn decode_body(words: &[u32]) -> Body {
+    assert_eq!(words.len(), 16);
+    core::array::from_fn(|row| read_column(words, row * 16))
+}
+
+pub(in crate::physics::solver) fn encode_body(body: &Body, words: &mut [u32]) {
+    for (row, values) in body.iter().enumerate() {
+        write_column(words, row * 16, *values);
+    }
+}
+
 /// `82AE1AE8` and `82AE3BC8` write these same response fields. Columns at
 /// 64/96/128 and 80/112/144 project relative corrections into constraint axes;
 /// 192..224 and 240..272 convert impulse changes back into world space.
@@ -118,25 +133,17 @@ pub(in crate::physics::solver) struct ReactionState {
 }
 
 impl ReactionState {
-    pub fn decode(words: &[u32]) -> Self {
-        assert_eq!(words.len(), 16);
+    pub fn load(body: &Body) -> Self {
         Self {
-            linear: read_column(words, 0),
-            angular: read_column(words, 32),
+            linear: body[0],
+            angular: body[2],
         }
     }
-}
 
-pub(in crate::physics::solver) fn publish_reactions(
-    a: &ReactionState,
-    b: &ReactionState,
-    words_a: &mut [u32],
-    words_b: &mut [u32],
-) {
-    write_column(words_a, 0, a.linear);
-    write_column(words_b, 0, b.linear);
-    write_column(words_a, 32, a.angular);
-    write_column(words_b, 32, b.angular);
+    pub fn store(&self, body: &mut Body) {
+        body[0] = self.linear;
+        body[2] = self.angular;
+    }
 }
 
 /// Matrix projection with the native X, Y, Z fused accumulation order. The

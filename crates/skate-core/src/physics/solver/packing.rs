@@ -1,15 +1,8 @@
 //! Semantic builder outputs → native compiled-record layout.
+use super::joint::data::{Body, decode_body, encode_body};
 use super::{packed, *};
 use crate::math::Vector3;
 use crate::physics::rigid_body::RetailPackedWorldInverseInertia;
-
-pub(super) fn contact(c: &RetailContactJacobian) -> packed::Contact {
-    packed::Contact {
-        words: *c.words(),
-        reaction_a: c.reaction_index_a,
-        reaction_b: c.reaction_index_b,
-    }
-}
 
 pub(super) fn drive(d: &RetailDriveRows) -> packed::Drive {
     let mut words = [0; 96];
@@ -109,6 +102,16 @@ pub(super) fn unpack_reaction(words: packed::Reaction) -> RetailReactionCorrecti
         angular_displacement: v(2),
         orientation_displacement: v(3),
     }
+}
+/// A reaction as the solver's floats: its packed record, decoded.
+pub(super) fn reaction_body(r: &RetailReactionCorrections) -> Body {
+    decode_body(&reaction(*r))
+}
+/// A solved reaction back from the solver's floats, through its packed record.
+pub(super) fn body_reaction(body: &Body) -> RetailReactionCorrections {
+    let mut words = [0; 16];
+    encode_body(body, &mut words);
+    unpack_reaction(words)
 }
 pub(super) fn read_xyz(words: &[u32], i: usize) -> [f32; 3] {
     core::array::from_fn(|j| f32::from_bits(words[4 * i + j]))

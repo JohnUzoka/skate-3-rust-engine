@@ -1,9 +1,13 @@
 //! Named view of the compiled contact and shared reaction records.
 //! Fourth components retain the native packed layout, including inverse mass
 //! alongside each body's first angular response.
+use crate::physics::solver::joint::data::Body;
+
 type Components = [f32; 4];
 
-pub(super) struct ContactRows {
+/// A contact record as the pass sees it: decoded once a solve (packed.rs). The pass writes only
+/// `accumulated` (row 5).
+pub(in crate::physics::solver) struct ContactRows {
     pub arm_a: Components,
     pub arm_b: Components,
     pub correction_columns: [Components; 3],
@@ -31,8 +35,8 @@ impl ContactRows {
             angular_b: core::array::from_fn(|i| read(words, 9 + 3 * i)),
         }
     }
-    pub fn publish_impulses(&self, words: &mut [u32], impulse: Components) {
-        write(words, 5, impulse);
+    pub fn publish(&self, words: &mut [u32]) {
+        write(words, 5, self.accumulated);
     }
 }
 
@@ -43,13 +47,12 @@ pub(super) struct Reaction {
     orientation: Components,
 }
 impl Reaction {
-    pub fn read(words: &[u32]) -> Self {
-        assert_eq!(words.len(), 16);
+    pub fn load(body: &Body) -> Self {
         Self {
-            linear: read(words, 0),
-            position: read(words, 1),
-            angular: read(words, 2),
-            orientation: read(words, 3),
+            linear: body[0],
+            position: body[1],
+            angular: body[2],
+            orientation: body[3],
         }
     }
     pub fn point_position(&self, arm: Components) -> Components {
@@ -91,13 +94,8 @@ impl Reaction {
             }
         }
     }
-    pub fn write(&self, words: &mut [u32]) {
-        for (row, value) in [self.linear, self.position, self.angular, self.orientation]
-            .into_iter()
-            .enumerate()
-        {
-            write(words, row, value);
-        }
+    pub fn store(&self, body: &mut Body) {
+        *body = [self.linear, self.position, self.angular, self.orientation];
     }
 }
 

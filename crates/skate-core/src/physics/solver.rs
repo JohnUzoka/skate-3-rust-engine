@@ -38,29 +38,64 @@ pub fn solve_constraints(
     reactions: &mut [RetailReactionCorrections],
     iterations: u32,
 ) {
-    let mut c: Vec<_> = contacts.iter().map(packing::contact).collect();
-    let mut j: Vec<_> = joints
+    // packed::solve's iterations, decoded straight from these records rather than from packed
+    // copies of them: the same values, without copying every record twice a tick.
+    use packed::{Solving, validate_pair};
+    let count = reactions.len();
+    for c in contacts.iter() {
+        validate_pair(c.reaction_index_a, c.reaction_index_b, count);
+    }
+    for j in joints.iter() {
+        validate_pair(j.reaction_a, j.reaction_b, count);
+    }
+    for d in drives.iter() {
+        validate_pair(d.frame_a_body.reaction_index, d.frame_b_body.reaction_index, count);
+    }
+    if iterations == 0 {
+        return;
+    }
+    let mut bodies: Vec<_> = reactions.iter().map(packing::reaction_body).collect();
+    let mut c: Vec<_> = contacts
         .iter()
-        .map(|j| packed::Joint {
-            words: j.jacobian.words,
-            reaction_a: j.reaction_a,
-            reaction_b: j.reaction_b,
+        .map(|c| Solving {
+            record: contact::ContactRows::read(c.words()),
+            a: c.reaction_index_a,
+            b: c.reaction_index_b,
         })
         .collect();
-    let mut d: Vec<_> = drives.iter().map(packing::drive).collect();
-    let mut r: Vec<_> = reactions.iter().copied().map(packing::reaction).collect();
-    packed::solve(&mut c, &mut j, &mut d, &mut r, iterations);
-    for (contact, native) in contacts.iter_mut().zip(c) {
-        contact.words = native.words;
+    let mut j: Vec<_> = joints
+        .iter()
+        .map(|j| Solving {
+            record: joint::Joint::decode(&j.jacobian.words),
+            a: j.reaction_a,
+            b: j.reaction_b,
+        })
+        .collect();
+    let mut d: Vec<_> = drives
+        .iter()
+        .map(|d| {
+            let record = packing::drive(d);
+            Solving {
+                record: drive::Drive::decode(&record.words),
+                a: record.reaction_a,
+                b: record.reaction_b,
+            }
+        })
+        .collect();
+    packed::iterate(&mut bodies, &mut c, &mut j, &mut d, iterations);
+    for (contact, native) in contacts.iter_mut().zip(&c) {
+        native.record.publish(&mut contact.words);
     }
-    for (joint, native) in joints.iter_mut().zip(j) {
-        joint.jacobian.words = native.words;
+    for (joint, native) in joints.iter_mut().zip(&j) {
+        native.record.publish(&mut joint.jacobian.words);
     }
-    for (drive, native) in drives.iter_mut().zip(d) {
-        drive.accumulated_linear_impulse = packing::read_xyz(&native.words, 2);
-        drive.accumulated_angular_impulse = packing::read_xyz(&native.words, 3);
+    for (drive, native) in drives.iter_mut().zip(&d) {
+        let [lx, ly, lz, _] = native.record.linear();
+        let [ax, ay, az, _] = native.record.angular();
+        drive.accumulated_linear_impulse = [lx, ly, lz];
+        drive.accumulated_angular_impulse = [ax, ay, az];
     }
-    for (reaction, native) in reactions.iter_mut().zip(r) {
-        *reaction = packing::unpack_reaction(native);
+    for (reaction, body) in reactions.iter_mut().zip(&bodies) {
+        *reaction = packing::body_reaction(body);
     }
 }

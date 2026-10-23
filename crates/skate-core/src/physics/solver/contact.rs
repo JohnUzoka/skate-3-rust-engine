@@ -5,12 +5,13 @@
 //! not been established by hardware captures.
 #[path = "contact_data.rs"]
 mod data;
-use data::{ContactRows, Reaction};
+pub(super) use data::ContactRows;
+use data::Reaction;
+use super::joint::data::Body;
 
-pub(super) fn solve(record: &mut [u32], a: &mut [u32], b: &mut [u32]) {
-    let rows = ContactRows::read(record);
-    let mut reaction_a = Reaction::read(a);
-    let mut reaction_b = Reaction::read(b);
+pub(super) fn solve(rows: &mut ContactRows, a: &mut Body, b: &mut Body) {
+    let mut reaction_a = Reaction::load(a);
+    let mut reaction_b = Reaction::load(b);
     let position_a = reaction_a.point_position(rows.arm_a);
     let position_b = reaction_b.point_position(rows.arm_b);
     let velocity_a = reaction_a.point_velocity(rows.arm_a);
@@ -65,9 +66,9 @@ pub(super) fn solve(record: &mut [u32], a: &mut [u32], b: &mut [u32]) {
         }
     });
     let change = core::array::from_fn(|lane| next[lane] - rows.accumulated[lane]);
-    rows.publish_impulses(record, next);
-    reaction_a.apply_contact(&rows, change, true);
-    reaction_b.apply_contact(&rows, change, false);
-    reaction_a.write(a);
-    reaction_b.write(b);
+    reaction_a.apply_contact(rows, change, true);
+    reaction_b.apply_contact(rows, change, false);
+    rows.accumulated = next;
+    reaction_a.store(a);
+    reaction_b.store(b);
 }

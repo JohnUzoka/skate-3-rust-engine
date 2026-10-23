@@ -272,3 +272,46 @@ fn attached_volume_contact_reaches_its_actual_solver_body() {
     assert!(attached.rates.linear_velocity.y > before + 0.5);
     assert!(board.contact_reports().is_empty(), "skater contacts are not board observations");
 }
+
+/// Host timing for the constraint solver: a board rolling on the ground for 600 ticks at the
+/// game's 50 iterations (skate-game physics/settings.rs `SIMULATION_ITERATIONS`), with a checksum
+/// of every body's state after each tick, so a change to the solver can show it gives the same
+/// bits. `cargo test --release -p skate-core --lib solver_timing -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn solver_timing() {
+    let gravity = Vector3::new(0.0, -9.8, 0.0);
+    let mut board = board(0.0, gravity);
+    for body in board.bodies_mut() {
+        body.rates.linear_velocity = Vector3::new(0.0, 0.0, -0.8);
+    }
+    let mut world = BoardWorld::new(vec![triangle()]);
+    let settings = BoardStepSettings {
+        simulation: RetailSimulationStep::fixed_60_hz(30, 0.001, gravity),
+        iterations: 50,
+        base_truck_transforms: default_truck_transforms(),
+        truck_dynamics: retail_truck_drive_dynamics(RetailTruckDriveSettings::STOCK),
+        force_point_y_offset: 0.0,
+    };
+    let mut checksum = 0u64;
+    let mut contacts = 0;
+    let started = std::time::Instant::now();
+    for _ in 0..600 {
+        let collisions = world.query(&board, config());
+        contacts += collisions.len();
+        board.advance(collisions, [0.0; 2], settings);
+        for body in board.bodies() {
+            let rates = &body.rates;
+            for v in [rates.position, rates.linear_velocity, rates.angular_velocity] {
+                for c in [v.x, v.y, v.z] {
+                    checksum = checksum.rotate_left(7) ^ u64::from(c.to_bits());
+                }
+            }
+        }
+    }
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "solver_timing: 600 ticks, {contacts} contacts, in {ms:.1} ms ({:.3} ms a tick); checksum {checksum:016x}",
+        ms / 600.0
+    );
+}
