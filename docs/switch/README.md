@@ -80,6 +80,13 @@ env SKATE_WORLD_LEAN=0
 defaults. The defaults and the other options are listed at the top of
 [`crates/skate-game/src/horizon.rs`](../../crates/skate-game/src/horizon.rs).
 
+The pause menu's render scale draws the world at fewer pixels than the screen's. Below
+100 %, the picture is upscaled with the edge-adaptive filter (EASU) of AMD's FidelityFX
+Super Resolution 1.0 (MIT), the way the Switch ports
+[masseffect-nx](https://github.com/nebadasSwifty/masseffect-nx) and
+[usf4-nx](https://github.com/Thorhax/usf4-nx) render below the screen's resolution;
+`env SKATE_UPSCALE=bilinear` stretches it as before.
+
 ## Logs
 
 Each launch rewrites `switch/skate3rust/log.txt`, and a crash writes `panic.txt`

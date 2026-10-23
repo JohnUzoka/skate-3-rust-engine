@@ -314,6 +314,31 @@ fn sky_shader_validates() {
     validate(include_str!("retail_sky.wgsl"), &[]);
 }
 
+/// The presentation pass's upscale (graphics_menu.rs `Upscaler`), against Bevy UI's own vertex
+/// output: its bindings are written by hand and have to stay in step with the material's
+/// `AsBindGroup` derive.
+#[test]
+fn fsr_easu_shader_validates() {
+    let mut composer = Composer::default();
+    if let Err(error) = composer.add_composable_module(ComposableModuleDescriptor {
+        source: include_str!("../../../vendor/bevy_ui_render/src/ui_vertex_output.wgsl"),
+        file_path: "ui_vertex_output.wgsl",
+        ..Default::default()
+    }) {
+        panic!("{}", error.emit_to_string(&composer));
+    }
+    let module = composer
+        .make_naga_module(NagaModuleDescriptor {
+            source: include_str!("fsr_easu.wgsl"),
+            file_path: "fsr_easu.wgsl",
+            ..Default::default()
+        })
+        .unwrap_or_else(|e| panic!("{}", e.emit_to_string(&composer)));
+    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .expect("fsr_easu.wgsl validates");
+}
+
 /// The depth pipelines are where a second vertex layout is in play, and a
 /// mismatch there aborts pipeline creation rather than degrading. Cover each
 /// combination Bevy and `specialize` can ask for: cutting classes sample a page,

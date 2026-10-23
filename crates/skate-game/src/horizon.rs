@@ -40,8 +40,11 @@
 //!     page_cache.rs's `SKATE_PAGE_CACHE=0` (build the texture pages at every launch) and
 //!     `SKATE_PAGE_CACHE_VERIFY=1` (build them anyway and compare them with the cached copy),
 //!     game_audio's `SKATE_AUDIO_EARLY_LOAD=0` (load the start-up sounds in the first frame,
-//!     not while the scene is built; native/startup.rs), or
-//!     bevy_horizon's `BEVY_HORIZON_CPU_PROFILE` (its profiler.rs) and
+//!     not while the scene is built; native/startup.rs), graphics_menu.rs's
+//!     `SKATE_UPSCALE=bilinear` (a render scale under 100 % stretched as before, not upscaled,
+//!     for comparing), Mesa's `NAK_DEBUG` and `NVK_SWITCH_DEAD_COLOR` (bevy_horizon's
+//!     docs/toolchain.md), or bevy_horizon's `BH_THREAD_CORES` (the cores new threads may run
+//!     on; its docs/platform-notes.md), `BEVY_HORIZON_CPU_PROFILE` (its profiler.rs),
 //!     `BH_ROBUST_BUFFER_ACCESS=0` (its patched wgpu-hal: drops the bounds check NVK otherwise
 //!     puts on every storage-buffer load) and `BH_RT_COMPRESSION` (the same wgpu-hal: large
 //!     render targets get memory of their own, which NVK can keep compressed; its

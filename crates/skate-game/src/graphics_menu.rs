@@ -4,12 +4,15 @@ use crate::difficulty::Difficulty;
 use crate::custom_difficulty::{Tuning, OPTIONS};
 use bevy::ui::RelativeCursorPosition;
 use bevy::{
+    asset::embedded_asset,
     camera::RenderTarget,
     image::ImageSampler,
     prelude::*,
     render::{
-        render_resource::{Extent3d, TextureFormat},
+        render_resource::{AsBindGroup, Extent3d, TextureFormat},
     },
+    shader::ShaderRef,
+    ui_render::UiMaterialPlugin,
     window::{MonitorSelection, PresentMode, PrimaryWindow, WindowMode, WindowRef},
 };
 use serde::{Deserialize, Serialize};
@@ -223,6 +226,22 @@ struct Presenter {
     node: Entity,
     direct: bool,
 }
+/// FSR 1's edge-adaptive upscale of the scene image (fsr_easu.wgsl), which the presentation
+/// camera's full-screen node draws instead of the image's bilinear filter below 100% scale
+/// (`choose_upscaler`).
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct Upscaler {
+    #[texture(0)]
+    #[sampler(1)]
+    scene: Handle<Image>,
+}
+impl UiMaterial for Upscaler {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://skate3rust/fsr_easu.wgsl".into()
+    }
+}
+#[derive(Resource)]
+struct UpscalerMaterial(Handle<Upscaler>);
 #[derive(Resource)]
 struct FramePacer(Instant);
 #[derive(Component)]
@@ -250,6 +269,8 @@ pub(crate) struct PresentationMode;
 pub(crate) struct GraphicsMenuPlugin;
 impl Plugin for GraphicsMenuPlugin {
     fn build(&self, app: &mut App) {
+        embedded_asset!(app, "fsr_easu.wgsl");
+        app.add_plugins(UiMaterialPlugin::<Upscaler>::default());
         app.insert_resource(FramePacer(Instant::now()))
             .add_systems(PostStartup, setup.in_set(PresentationSetup))
             .add_systems(PreUpdate, (refresh_sections, interact, apply_custom_difficulty).chain().in_set(MenuInput).after(bevy::input::InputSystems))
@@ -259,6 +280,7 @@ impl Plugin for GraphicsMenuPlugin {
             .add_systems(Update, custom_sliders.before(labels))
             .add_systems(Update, (crate::map_render::advance_day, apply, labels, scroll_menu, resize_menu).chain())
             .add_systems(Update, choose_presentation.in_set(PresentationMode).after(crate::camera::present))
+            .add_systems(Update, choose_upscaler.after(apply))
             .add_systems(PostUpdate, crate::map_render::position_celestial_bodies.before(bevy::transform::TransformSystems::Propagate))
             .add_systems(Last, pace);
         use bevy::render::{Render, RenderApp, RenderSystems};
@@ -274,6 +296,7 @@ fn setup(
     mut window: Single<&mut Window, With<PrimaryWindow>>,
     cameras: Query<Entity, With<Camera3d>>,
     mut time: ResMut<Time<Virtual>>,
+    mut upscalers: ResMut<Assets<Upscaler>>,
 ) {
     let path = config
         .asset_root
@@ -322,6 +345,7 @@ fn setup(
         UiTargetCamera(output),
     )).id();
     commands.insert_resource(Presenter { output, node, direct: false });
+    commands.insert_resource(UpscalerMaterial(upscalers.add(Upscaler { scene: target.clone() })));
     let data = skate_data::collections::Collections::load(&config.asset_root).expect("validated startup collections");
     let custom_defaults = Tuning::defaults(&data).expect("validated Easy difficulty");
     let custom = Tuning::load(&config.asset_root, &data).expect("validated Custom difficulty");
@@ -759,6 +783,48 @@ fn apply(
         }
     }
     *previous = Some(menu.settings.clone());
+}
+/// Below 100% scale the presentation camera's node draws the scene image through FSR 1's
+/// edge-adaptive upscale (`Upscaler`), at 100% through the image's own filter, one scene pixel to
+/// each window pixel. `SKATE_UPSCALE=bilinear` keeps the image's bilinear filter at every scale.
+/// The scene image changes size with the scale (`apply`), so the material is marked changed then,
+/// for its bind group to take the new texture.
+fn choose_upscaler(
+    mut commands: Commands,
+    menu: Res<Menu>,
+    presenter: Option<Res<Presenter>>,
+    target: Res<SceneTarget>,
+    upscaler: Option<Res<UpscalerMaterial>>,
+    mut materials: ResMut<Assets<Upscaler>>,
+    images: Res<Assets<Image>>,
+    mut applied: Local<Option<(bool, UVec2)>>,
+) {
+    let (Some(presenter), Some(upscaler)) = (presenter, upscaler) else {
+        return;
+    };
+    let on = menu.settings.scale < 100
+        && !std::env::var("SKATE_UPSCALE").is_ok_and(|v| v.trim().eq_ignore_ascii_case("bilinear"));
+    let size = images.get(&target.0).map_or(UVec2::ZERO, |image| image.size());
+    if *applied == Some((on, size)) {
+        return;
+    }
+    if applied.is_none_or(|(was_on, _)| was_on != on) {
+        if on {
+            commands.entity(presenter.node).remove::<ImageNode>().insert(MaterialNode(upscaler.0.clone()));
+        } else {
+            commands.entity(presenter.node).remove::<MaterialNode<Upscaler>>().insert(ImageNode::new(target.0.clone()));
+        }
+        info!(
+            "[Skate] presentation: the {}x{} scene image reaches the window through {}",
+            size.x,
+            size.y,
+            if on { "FSR 1's edge-adaptive upscale" } else { "its own filter" }
+        );
+    }
+    if on {
+        materials.get_mut(&upscaler.0);
+    }
+    *applied = Some((on, size));
 }
 /// At 100% scale the scene image is the window's size, so the presentation camera only clears a
 /// texture and its depth, copies the image into it under the UI, and copies it into the window:
