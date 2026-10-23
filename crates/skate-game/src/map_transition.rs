@@ -341,6 +341,12 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     // decoding/validation/construction finished before this point, so no
     // simulation system can observe a mixture of the two worlds.
     crate::map_render::MapAssets::retire(world);
+    // The old world's small blocks now sit in bevy-horizon's cache, where NVK, falling back to
+    // malloc for a GPU block of the new world's, can't take them back.
+    #[cfg(target_os = "horizon")]
+    if bevy_horizon::release_cached_memory() {
+        crate::log_memory("map change, the small-block cache emptied");
+    }
     prepared.scene.publish(world);
     crate::camera::set_world_environment(world, prepared.retail);
     world.insert_resource(crate::retail_render::RetailScene(prepared.retail));

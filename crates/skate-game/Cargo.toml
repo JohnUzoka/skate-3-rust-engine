@@ -73,7 +73,7 @@ bevy = { workspace = true, features = [
 ] }
 # `top_down_alloc`: Rust's blocks of 256 KiB and up go in the top-down region NVK takes GPU memory
 # from, so the scene data freed after loading leaves runs the GPU can use, and freed blocks of up to
-# 8 KiB stay in a cache instead of queueing for malloc's lock (bevy-horizon allocator.rs).
+# 32 KiB stay in a cache instead of queueing for malloc's lock (bevy-horizon allocator.rs).
 bevy_horizon = { path = "../../../bevy-horizon/crates/bevy_horizon", default-features = false, features = ["bevy_0_18", "vulkan", "render_0_18", "top_down_alloc"] }
 
 [dev-dependencies]
