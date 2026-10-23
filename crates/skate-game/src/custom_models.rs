@@ -274,6 +274,7 @@ fn interact(
     mut scroll_nodes: Query<(&mut ScrollPosition, &ComputedNode), With<ModelScroll>>,
     config: Res<crate::config::Config>,
     manifest: Res<crate::assets::AssetManifest>,
+    customiser: Option<ResMut<crate::customiser::Customiser>>,
 ) {
     if !state.open {
         wheel.clear();
@@ -364,7 +365,12 @@ fn interact(
                     Err(e) => e,
                 };
             }
-            1 => state.request_stock(),
+            1 => {
+                state.request_stock();
+                if let Some(Err(e)) = customiser.map(|mut c| c.wear_stock()) {
+                    warn!("Custom models: the stock skater is on, but the choice could not be saved: {e}");
+                }
+            }
             2 => {
                 state.filter = (state.filter + 1) % 4;
                 state.scroll = 0.;
@@ -626,6 +632,7 @@ fn draw(
     mut state: ResMut<CustomModels>,
     server: Res<AssetServer>,
     existing: Query<Entity, With<Panel>>,
+    customiser: Option<Res<crate::customiser::Customiser>>,
 ) {
     if !state.dirty {
         return;
@@ -638,6 +645,7 @@ fn draw(
         return;
     }
     let selected = state.selected;
+    let stock = state.active.is_none() && !customiser.is_some_and(|c| c.enabled);
     commands.spawn((Panel, GlobalZIndex(30), Node { position_type:PositionType::Absolute, width:percent(100), height:percent(100),
         justify_content:JustifyContent::Center, align_items:AlignItems::Center, ..default() }, BackgroundColor(Color::srgba(0.015,0.025,0.04,0.94))))
         .with_children(|root| { root.spawn((Node { width:px(800), height:percent(94), max_width:percent(96), padding:UiRect::all(px(20)),
@@ -648,7 +656,7 @@ fn draw(
                 panel.spawn(Node { column_gap:px(10), ..default() }).with_children(|bar| {
                     button(bar,0, if state.import.is_some() { "Importing..." } else { "Import model..." },selected);
                     button(bar,2,["Show: All", "Show: Pros", "Show: Specials", "Show: Imported"][state.filter],selected);
-                    button(bar,1,if state.active.is_none() { "Stock skater (active)" } else { "Use stock skater" },selected);
+                    button(bar,1,if stock { "Stock skater (active)" } else { "Use stock skater" },selected);
                 });
                 panel.spawn((ModelScroll, ScrollPosition(Vec2::new(0., state.scroll)), Node {
                     display:Display::Grid, grid_template_columns:RepeatedGridTrack::flex(COLUMNS as u16, 1.),

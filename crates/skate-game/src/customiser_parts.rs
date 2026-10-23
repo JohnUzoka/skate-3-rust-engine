@@ -594,12 +594,23 @@ pub(crate) fn update(
     mut animation: ResMut<crate::animation::AnimationStatus>,
     custom_models: Res<crate::custom_models::CustomModels>,
 ) {
-    if !state.enabled || custom_models.active.is_some() {
+    if custom_models.active.is_some() {
         return;
     }
     let Ok(root) = root.single() else {
         return;
     };
+    if !state.enabled {
+        // The stock skater: its own model back, and the outfit applied afresh when the customiser
+        // is opened again.
+        if wear_stock(root, &parents, &mut scenes) {
+            *animation = default();
+        }
+        if !parts.applied.is_null() {
+            parts.applied = Value::Null;
+        }
+        return;
+    }
     let preview = state.preview(&parts);
     let Some(selections) = preview["selections"].as_object() else {
         return;
@@ -786,6 +797,27 @@ pub(crate) fn update(
         state.status.clear();
         state.redraw = true;
     }
+}
+
+/// Hides the outfit's parts on the player and shows its other models (the stock skater), as
+/// before any outfit was applied; whether anything changed, so the rig binds again.
+fn wear_stock(
+    root: Entity,
+    parents: &Query<&ChildOf>,
+    scenes: &mut Query<(Entity, Option<&PartRoot>, &mut Visibility), (With<SceneRoot>, Without<crate::custom_models::CustomModelRoot>)>,
+) -> bool {
+    let mut changed = false;
+    for (entity, part, mut visible) in scenes.iter_mut() {
+        if !parents.get(entity).is_ok_and(|p| p.parent() == root) {
+            continue;
+        }
+        let target = if part.is_some() { Visibility::Hidden } else { Visibility::Inherited };
+        if *visible != target {
+            *visible = target;
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[cfg(test)]

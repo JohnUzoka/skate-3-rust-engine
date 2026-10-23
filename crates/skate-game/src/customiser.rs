@@ -57,6 +57,20 @@ impl Customiser {
         self.status.clear();
         self.redraw = true;
     }
+    /// "Use stock skater": the skater stops wearing the outfit, now and at the next launch. The
+    /// outfit stays saved, and opening the customiser puts it back on.
+    pub(crate) fn wear_stock(&mut self) -> Result<(), String> {
+        self.enabled = false;
+        let Ok(bytes) = std::fs::read(&self.settings) else {
+            return Ok(());
+        };
+        let mut saved = serde_json::from_slice::<Value>(&bytes).map_err(|e| e.to_string())?;
+        let Some(fields) = saved.as_object_mut() else {
+            return Ok(());
+        };
+        fields.insert("worn".into(), Value::Bool(false));
+        write_outfit(&self.settings, &saved)
+    }
     fn page(&self) -> &Entry {
         let mut page = &self.index;
         for &i in &self.path {
@@ -655,6 +669,20 @@ fn menu(lib: &Library, extras: Vec<Entry>) -> Entry {
     }
     root
 }
+/// The outfit in `settings/character.json`, and whether the skater wears it: "Use stock skater"
+/// keeps the outfit saved with `"worn": false`, which the draft doesn't carry.
+fn saved_outfit(bytes: &[u8]) -> Option<(Value, bool)> {
+    let mut saved = serde_json::from_slice::<Value>(bytes).ok()?;
+    let worn = saved.as_object_mut()?.remove("worn").and_then(|v| v.as_bool()).unwrap_or(true);
+    Some((saved, worn))
+}
+/// Writes `settings/character.json` through a temporary file, so a failed write leaves the old one.
+fn write_outfit(path: &std::path::Path, outfit: &Value) -> Result<(), String> {
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("pending.json");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(outfit).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    std::fs::rename(tmp, path).map_err(|e| e.to_string())
+}
 fn setup(mut commands: Commands, config: Res<crate::config::Config>, parts: Res<Parts>) {
     let settings = config
         .asset_root
@@ -669,12 +697,10 @@ fn setup(mut commands: Commands, config: Res<crate::config::Config>, parts: Res<
         .unwrap_or(json!({"selections":{},"morphs":{}}));
     let mut enabled = false;
     let status = String::new();
-    if let Ok(b) = std::fs::read(&settings) {
-        if let Ok(saved) = serde_json::from_slice::<Value>(&b) {
-            if let Ok(p) = parts.resolve(&saved) {
-                draft = p;
-                enabled = true;
-            }
+    if let Some((saved, worn)) = std::fs::read(&settings).ok().and_then(|b| saved_outfit(&b)) {
+        if let Ok(p) = parts.resolve(&saved) {
+            draft = p;
+            enabled = worn;
         }
     }
     let extras = std::fs::read(
@@ -904,18 +930,7 @@ fn interact(
         if let Some(i) = state.path.pop() {
             state.selected = state.visible().iter().position(|v| *v == i).unwrap_or(0);
         } else {
-            let save = (|| -> Result<(), String> {
-                std::fs::create_dir_all(state.settings.parent().unwrap())
-                    .map_err(|e| e.to_string())?;
-                let tmp = state.settings.with_extension("pending.json");
-                std::fs::write(
-                    &tmp,
-                    serde_json::to_vec_pretty(&state.draft).map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
-                std::fs::rename(tmp, &state.settings).map_err(|e| e.to_string())
-            })();
-            match save {
+            match write_outfit(&state.settings, &state.draft) {
                 Ok(()) => {
                     state.open = false;
                     pause.open = false;
@@ -1351,6 +1366,67 @@ mod tests {
         assert_eq!(*world.get::<Visibility>(stock).unwrap(), Visibility::Inherited);
         assert!(world.resource::<Customiser>().status.contains("unavailable"));
         assert!(world.resource::<Parts>().applied.is_null());
+    }
+    #[test]
+    fn customiser_off_shows_the_stock_skater_instead_of_the_outfit() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+        app.init_resource::<crate::customiser_parts::Parts>()
+            .init_resource::<crate::custom_models::CustomModels>()
+            .init_resource::<crate::animation::AnimationStatus>()
+            .init_resource::<Assets<crate::customiser_material::SkaterMaterial>>();
+        let world = app.world_mut();
+        world.insert_resource(Customiser {
+            open: false, enabled: false, just_opened: false, preview_yaw: 0.,
+            index: Entry::default(), path: vec![], selected: 0, page_size: 6,
+            search: String::new(), draft: json!({"selections":{},"morphs":{}}),
+            settings: PathBuf::new(), status: String::new(), redraw: false,
+        });
+        world.resource_mut::<Parts>().applied = json!({"selections":{"Hat":{"asset_id":"hat"}}});
+        world.resource_mut::<crate::animation::AnimationStatus>().ready = true;
+        let player = world.spawn(crate::world::PlayerRoot).id();
+        let stock = world.spawn((SceneRoot(default()), Visibility::Hidden, ChildOf(player))).id();
+        let part = world
+            .spawn((SceneRoot(default()), crate::customiser_parts::PartRoot("hat".into()), Visibility::Inherited, ChildOf(player)))
+            .id();
+        world.run_system_once(crate::customiser_parts::update).unwrap();
+        assert_eq!(*world.get::<Visibility>(stock).unwrap(), Visibility::Inherited);
+        assert_eq!(*world.get::<Visibility>(part).unwrap(), Visibility::Hidden);
+        assert!(world.resource::<Parts>().applied.is_null());
+        assert!(!world.resource::<crate::animation::AnimationStatus>().ready);
+        // Nothing left to change: the rig isn't bound again every frame.
+        world.resource_mut::<crate::animation::AnimationStatus>().ready = true;
+        world.run_system_once(crate::customiser_parts::update).unwrap();
+        assert!(world.resource::<crate::animation::AnimationStatus>().ready);
+    }
+    #[test]
+    fn customiser_stock_choice_keeps_the_outfit_saved_but_not_worn() {
+        let dir = std::env::temp_dir().join(format!("skate-stock-skater-{}", std::process::id()));
+        let settings = dir.join("settings/character.json");
+        let outfit = json!({"selections":{"Hat":{"asset_id":"hat","material_id":"felt"}},"morphs":{}});
+        write_outfit(&settings, &outfit).unwrap();
+        let mut state = Customiser {
+            open: false, enabled: true, just_opened: false, preview_yaw: 0.,
+            index: Entry::default(), path: vec![], selected: 0, page_size: 6,
+            search: String::new(), draft: outfit.clone(),
+            settings: settings.clone(), status: String::new(), redraw: false,
+        };
+        state.wear_stock().unwrap();
+        assert!(!state.enabled);
+        let (saved, worn) = saved_outfit(&std::fs::read(&settings).unwrap()).unwrap();
+        assert!(!worn);
+        assert_eq!(saved, outfit);
+        // Opening the customiser wears it again, and leaving it saves the draft without the flag.
+        state.begin();
+        assert!(state.enabled);
+        write_outfit(&settings, &state.draft).unwrap();
+        assert!(saved_outfit(&std::fs::read(&settings).unwrap()).unwrap().1);
+        // With nothing saved yet, the choice holds for this launch only.
+        std::fs::remove_file(&settings).unwrap();
+        state.wear_stock().unwrap();
+        assert!(!state.enabled && !settings.exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn customiser_colour_choice_is_distinct_from_the_original() {
