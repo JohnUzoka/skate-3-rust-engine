@@ -28,6 +28,26 @@ impl AnimationStatus {
         self.bindings.iter().map(|b|(b.entity,b.bone,b.parent_bone)).collect()
     }
 
+    /// How many joints of the skins `shown` aren't bound, and how many bound joints are gone.
+    /// `present` poses only the bound joints, by entity, so either leaves those skins in their bind
+    /// pose until they bind again.
+    fn stale(
+        &self,
+        skins: &Query<(Entity, &SkinnedMesh)>,
+        nodes: &Query<(&Name, &Transform)>,
+        shown: impl Fn(Entity) -> bool,
+    ) -> (usize, usize) {
+        let bound: std::collections::HashSet<Entity> = self.bindings.iter().map(|b| b.entity).collect();
+        let unbound = skins
+            .iter()
+            .filter(|(entity, _)| shown(*entity))
+            .flat_map(|(_, skin)| skin.joints.iter())
+            .filter(|joint| !bound.contains(*joint))
+            .count();
+        let gone = self.bindings.iter().filter(|b| nodes.get(b.entity).is_err()).count();
+        (unbound, gone)
+    }
+
     /// Prepare a hidden imported scene without disturbing the live bindings.
     pub(crate) fn for_scene(
         root: Entity,
@@ -131,14 +151,35 @@ fn bind(
     mut exit: MessageWriter<AppExit>,
     // Since when it has waited to bind, and whether it has said why.
     mut waiting: Local<Option<(std::time::Instant, bool)>>,
+    // How many times the bindings went stale, for the first lines in the log.
+    mut stale: Local<u32>,
 ) {
     // Not gated on `AssetStatus::Ready`: the skins below are the character's spawned scene, so
     // they are enough. On the Switch, starting with the map loading in the background, the
     // character's asset sometimes never counted as loaded with its dependencies, the skater
     // stayed in its bind pose (findings 59 §14), and nothing said why.
-    if *status == AssetStatus::Failed || animation.ready {
+    if *status == AssetStatus::Failed {
         *waiting = None;
         return;
+    }
+    let shown = |entity| shown_under_player(entity, &parents, &visibility, &roots);
+    if animation.ready {
+        // The skater can show skins it isn't bound to, and so stand in its bind pose until a swap
+        // binds it again (findings 59 §26): bind again as soon as it does.
+        let (unbound, gone) = animation.stale(&skins, &nodes, shown);
+        if unbound == 0 && gone == 0 {
+            *waiting = None;
+            return;
+        }
+        if *stale < 10 {
+            warn!(
+                "GAME_CHARACTER bindings went stale: {unbound} joints of the skins the skater shows aren't bound, and {gone} of the {} bound are gone; binding again",
+                animation.bindings.len()
+            );
+        }
+        *stale += 1;
+        animation.ready = false;
+        animation.bindings.clear();
     }
     let (since, warned) = waiting.get_or_insert_with(|| (std::time::Instant::now(), false));
     let names = &skater.animation.evaluator.frames.bone_names;
@@ -146,10 +187,9 @@ fn bind(
         let mut bindings = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (entity, skin) in &skins {
-            if !parents.iter_ancestors(entity).any(|e| roots.contains(e)) {
+            if !shown(entity) {
                 continue;
             }
-            if parents.iter_ancestors(entity).any(|e| visibility.get(e).is_ok_and(|v| *v == Visibility::Hidden)) { continue; }
             let mut binding = Vec::with_capacity(skin.joints.len());
             for &joint in &skin.joints {
                 if !seen.insert(joint) { continue; }
@@ -228,6 +268,16 @@ fn bind(
             exit.write(AppExit::error());
         }
     }
+}
+/// A skin under the player with no hidden ancestor: one the skater shows, and binds.
+fn shown_under_player(
+    entity: Entity,
+    parents: &Query<&ChildOf>,
+    visibility: &Query<&Visibility>,
+    roots: &Query<Entity, With<PlayerRoot>>,
+) -> bool {
+    parents.iter_ancestors(entity).any(|e| roots.contains(e))
+        && !parents.iter_ancestors(entity).any(|e| visibility.get(e).is_ok_and(|v| *v == Visibility::Hidden))
 }
 fn present(
     history: Res<crate::presentation::Presentation>,
@@ -308,5 +358,45 @@ mod online_swap_tests {
         for (entity,t) in replacement.pose_transforms(&next){*world.get_mut::<Transform>(entity).unwrap()=t;}
         assert_ne!(world.get::<Transform>(roots[0].1),world.get::<Transform>(roots[1].1));
         assert_ne!(world.get::<Transform>(roots[0].2),world.get::<Transform>(roots[1].2));
+    }
+}
+
+#[cfg(test)]
+mod stale_binding_tests {
+    use super::*;
+    use bevy::ecs::system::SystemState;
+    type Queries = (
+        Query<'static, 'static, (Entity, &'static SkinnedMesh)>,
+        Query<'static, 'static, (&'static Name, &'static Transform)>,
+        Query<'static, 'static, &'static ChildOf>,
+        Query<'static, 'static, &'static Visibility>,
+        Query<'static, 'static, Entity, With<PlayerRoot>>,
+    );
+    fn stale(world: &World, queries: &mut SystemState<Queries>, animation: &AnimationStatus) -> (usize, usize) {
+        let (skins, nodes, parents, visibility, roots) = queries.get(world);
+        animation.stale(&skins, &nodes, |e| shown_under_player(e, &parents, &visibility, &roots))
+    }
+    #[test]
+    fn bindings_go_stale_when_the_skater_shows_unbound_joints_or_loses_bound_ones() {
+        let mut world = World::new();
+        let player = world.spawn(PlayerRoot).id();
+        let rig = |world: &mut World, visibility: Visibility| {
+            let model = world.spawn((ChildOf(player), visibility)).id();
+            let hips = world.spawn((Name::new("HIPS"), Transform::default(), ChildOf(model))).id();
+            world.spawn((ChildOf(model), SkinnedMesh { inverse_bindposes: default(), joints: vec![hips] }));
+            (model, hips)
+        };
+        let (stock, stock_hips) = rig(&mut world, Visibility::Inherited);
+        let (outfit, _) = rig(&mut world, Visibility::Hidden);
+        let animation = AnimationStatus { ready: true, bindings: vec![BoneBinding { entity: stock_hips, bone: 0, parent_bone: None }] };
+        let mut queries = SystemState::<Queries>::new(&mut world);
+        assert_eq!(stale(&world, &mut queries, &animation), (0, 0));
+        // The outfit shown and the stock skater hidden, with no rebind: the outfit's joint isn't bound.
+        *world.get_mut::<Visibility>(stock).unwrap() = Visibility::Hidden;
+        *world.get_mut::<Visibility>(outfit).unwrap() = Visibility::Inherited;
+        assert_eq!(stale(&world, &mut queries, &animation), (1, 0));
+        // The bound joint despawned, as when a scene is spawned again.
+        world.despawn(stock_hips);
+        assert_eq!(stale(&world, &mut queries, &animation), (1, 1));
     }
 }
