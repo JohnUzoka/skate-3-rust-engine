@@ -32,7 +32,9 @@
 //!     `SKATE_TEST_WORLD=1`: the Switch build has no test world, map_library.rs), the rendering
 //!     trade-offs in render_options.rs
 //!     (`SKATE_DEPTH_PREPASS`, `SKATE_SUN_CASCADES`, `SKATE_SUN_SHADOW_DISTANCE`,
-//!     `SKATE_SHADOW_FILTER`, `SKATE_DRAW_DISTANCE`, `SKATE_WORLD_SHADOWS`), skate_world.rs's
+//!     `SKATE_SHADOW_FILTER`, `SKATE_DRAW_DISTANCE`, `SKATE_WORLD_SHADOWS`, and
+//!     `SKATE_UPSCALE=easu|bilinear`, how a render scale under 100 % is stretched to the
+//!     screen), skate_world.rs's
 //!     `SKATE_VERTEX_PACKING=0` (the world's standard vertex attributes) and
 //!     `SKATE_WORLD_ORDER=centroid` (the world's old triangle order), both for comparing,
 //!     map_transition.rs's `SKATE_MAP_CHANGE=<map name>@<seconds>` (request a map change that
@@ -40,10 +42,9 @@
 //!     page_cache.rs's `SKATE_PAGE_CACHE=0` (build the texture pages at every launch) and
 //!     `SKATE_PAGE_CACHE_VERIFY=1` (build them anyway and compare them with the cached copy),
 //!     game_audio's `SKATE_AUDIO_EARLY_LOAD=0` (load the start-up sounds in the first frame,
-//!     not while the scene is built; native/startup.rs), graphics_menu.rs's
-//!     `SKATE_UPSCALE=bilinear` (a render scale under 100 % stretched as before, not upscaled,
-//!     for comparing), Mesa's `NAK_DEBUG` and `NVK_SWITCH_DEAD_COLOR` (bevy_horizon's
-//!     docs/toolchain.md), or bevy_horizon's `BH_THREAD_CORES` (the cores new threads may run
+//!     not while the scene is built; native/startup.rs), Mesa's `NAK_DEBUG` and
+//!     `NVK_SWITCH_DEAD_COLOR` (bevy_horizon's docs/toolchain.md), or bevy_horizon's
+//!     `BH_THREAD_CORES` (the cores new threads may run
 //!     on; its docs/platform-notes.md), `BEVY_HORIZON_CPU_PROFILE` (its profiler.rs),
 //!     `BH_ROBUST_BUFFER_ACCESS=0` (its patched wgpu-hal: drops the bounds check NVK otherwise
 //!     puts on every storage-buffer load) and `BH_RT_COMPRESSION` (the same wgpu-hal: large

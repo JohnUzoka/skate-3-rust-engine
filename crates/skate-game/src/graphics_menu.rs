@@ -227,7 +227,7 @@ struct Presenter {
     direct: bool,
 }
 /// FSR 1's edge-adaptive upscale of the scene image (fsr_easu.wgsl), which the presentation
-/// camera's full-screen node draws instead of the image's bilinear filter below 100% scale
+/// camera's full-screen node draws below 100% scale with `SKATE_UPSCALE=easu`
 /// (`choose_upscaler`).
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct Upscaler {
@@ -240,8 +240,25 @@ impl UiMaterial for Upscaler {
         "embedded://skate3rust/fsr_easu.wgsl".into()
     }
 }
+/// FSR 1's sharpening on the scene image's bilinear stretch (fsr_rcas.wgsl), which the
+/// presentation camera's full-screen node draws below 100% scale unless `SKATE_UPSCALE` says
+/// otherwise (`choose_upscaler`).
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+struct Sharpener {
+    #[texture(0)]
+    #[sampler(1)]
+    scene: Handle<Image>,
+}
+impl UiMaterial for Sharpener {
+    fn fragment_shader() -> ShaderRef {
+        "embedded://skate3rust/fsr_rcas.wgsl".into()
+    }
+}
 #[derive(Resource)]
-struct UpscalerMaterial(Handle<Upscaler>);
+struct UpscalerMaterials {
+    easu: Handle<Upscaler>,
+    rcas: Handle<Sharpener>,
+}
 #[derive(Resource)]
 struct FramePacer(Instant);
 #[derive(Component)]
@@ -270,7 +287,8 @@ pub(crate) struct GraphicsMenuPlugin;
 impl Plugin for GraphicsMenuPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "fsr_easu.wgsl");
-        app.add_plugins(UiMaterialPlugin::<Upscaler>::default());
+        embedded_asset!(app, "fsr_rcas.wgsl");
+        app.add_plugins((UiMaterialPlugin::<Upscaler>::default(), UiMaterialPlugin::<Sharpener>::default()));
         app.insert_resource(FramePacer(Instant::now()))
             .add_systems(PostStartup, setup.in_set(PresentationSetup))
             .add_systems(PreUpdate, (refresh_sections, interact, apply_custom_difficulty).chain().in_set(MenuInput).after(bevy::input::InputSystems))
@@ -297,6 +315,7 @@ fn setup(
     cameras: Query<Entity, With<Camera3d>>,
     mut time: ResMut<Time<Virtual>>,
     mut upscalers: ResMut<Assets<Upscaler>>,
+    mut sharpeners: ResMut<Assets<Sharpener>>,
 ) {
     let path = config
         .asset_root
@@ -345,7 +364,10 @@ fn setup(
         UiTargetCamera(output),
     )).id();
     commands.insert_resource(Presenter { output, node, direct: false });
-    commands.insert_resource(UpscalerMaterial(upscalers.add(Upscaler { scene: target.clone() })));
+    commands.insert_resource(UpscalerMaterials {
+        easu: upscalers.add(Upscaler { scene: target.clone() }),
+        rcas: sharpeners.add(Sharpener { scene: target.clone() }),
+    });
     let data = skate_data::collections::Collections::load(&config.asset_root).expect("validated startup collections");
     let custom_defaults = Tuning::defaults(&data).expect("validated Easy difficulty");
     let custom = Tuning::load(&config.asset_root, &data).expect("validated Custom difficulty");
@@ -784,47 +806,66 @@ fn apply(
     }
     *previous = Some(menu.settings.clone());
 }
-/// Below 100% scale the presentation camera's node draws the scene image through FSR 1's
-/// edge-adaptive upscale (`Upscaler`), at 100% through the image's own filter, one scene pixel to
-/// each window pixel. `SKATE_UPSCALE=bilinear` keeps the image's bilinear filter at every scale.
-/// The scene image changes size with the scale (`apply`), so the material is marked changed then,
-/// for its bind group to take the new texture.
+/// Below 100% scale the presentation camera's node draws the scene image through the render
+/// options' upscale (`RenderOptions::upscale`, `SKATE_UPSCALE`): FSR 1's sharpening on its
+/// bilinear stretch (`Sharpener`) unless set, FSR 1's edge-adaptive upscale (`Upscaler`), or the
+/// image's bilinear filter alone. At 100% it draws through the image's own filter, one scene pixel
+/// to each window pixel. The scene image changes size with the scale (`apply`), so the material in
+/// use is marked changed then, for its bind group to take the new texture.
 fn choose_upscaler(
     mut commands: Commands,
     menu: Res<Menu>,
+    options: Option<Res<crate::render_options::RenderOptions>>,
     presenter: Option<Res<Presenter>>,
     target: Res<SceneTarget>,
-    upscaler: Option<Res<UpscalerMaterial>>,
-    mut materials: ResMut<Assets<Upscaler>>,
+    upscalers: Option<Res<UpscalerMaterials>>,
+    mut easu: ResMut<Assets<Upscaler>>,
+    mut rcas: ResMut<Assets<Sharpener>>,
     images: Res<Assets<Image>>,
-    mut applied: Local<Option<(bool, UVec2)>>,
+    mut applied: Local<Option<(crate::render_options::Upscale, UVec2)>>,
 ) {
-    let (Some(presenter), Some(upscaler)) = (presenter, upscaler) else {
+    use crate::render_options::{RenderOptions, Upscale};
+    let (Some(presenter), Some(upscalers)) = (presenter, upscalers) else {
         return;
     };
-    let on = menu.settings.scale < 100
-        && !std::env::var("SKATE_UPSCALE").is_ok_and(|v| v.trim().eq_ignore_ascii_case("bilinear"));
+    let upscale = if menu.settings.scale < 100 {
+        options.map_or(RenderOptions::default().upscale, |options| options.upscale)
+    } else {
+        Upscale::Bilinear
+    };
     let size = images.get(&target.0).map_or(UVec2::ZERO, |image| image.size());
-    if *applied == Some((on, size)) {
+    if *applied == Some((upscale, size)) {
         return;
     }
-    if applied.is_none_or(|(was_on, _)| was_on != on) {
-        if on {
-            commands.entity(presenter.node).remove::<ImageNode>().insert(MaterialNode(upscaler.0.clone()));
-        } else {
-            commands.entity(presenter.node).remove::<MaterialNode<Upscaler>>().insert(ImageNode::new(target.0.clone()));
-        }
+    if applied.is_none_or(|(was, _)| was != upscale) {
+        let mut node = commands.entity(presenter.node);
+        node.remove::<(ImageNode, MaterialNode<Upscaler>, MaterialNode<Sharpener>)>();
+        match upscale {
+            Upscale::Rcas => node.insert(MaterialNode(upscalers.rcas.clone())),
+            Upscale::Easu => node.insert(MaterialNode(upscalers.easu.clone())),
+            Upscale::Bilinear => node.insert(ImageNode::new(target.0.clone())),
+        };
         info!(
             "[Skate] presentation: the {}x{} scene image reaches the window through {}",
             size.x,
             size.y,
-            if on { "FSR 1's edge-adaptive upscale" } else { "its own filter" }
+            match upscale {
+                Upscale::Rcas => "FSR 1's sharpening on its bilinear stretch",
+                Upscale::Easu => "FSR 1's edge-adaptive upscale",
+                Upscale::Bilinear => "its own filter",
+            }
         );
     }
-    if on {
-        materials.get_mut(&upscaler.0);
+    match upscale {
+        Upscale::Rcas => {
+            rcas.get_mut(&upscalers.rcas);
+        }
+        Upscale::Easu => {
+            easu.get_mut(&upscalers.easu);
+        }
+        Upscale::Bilinear => {}
     }
-    *applied = Some((on, size));
+    *applied = Some((upscale, size));
 }
 /// At 100% scale the scene image is the window's size, so the presentation camera only clears a
 /// texture and its depth, copies the image into it under the UI, and copies it into the window:
