@@ -225,6 +225,8 @@ struct Presenter {
     output: Entity,
     node: Entity,
     direct: bool,
+    /// The presentation camera draws into the window itself (`choose_presentation`).
+    to_window: bool,
 }
 /// FSR 1's edge-adaptive upscale of the scene image (fsr_easu.wgsl), which the presentation
 /// camera's full-screen node draws below 100% scale with `SKATE_UPSCALE=easu`
@@ -239,6 +241,12 @@ impl UiMaterial for Upscaler {
     fn fragment_shader() -> ShaderRef {
         "embedded://skate3rust/fsr_easu.wgsl".into()
     }
+    fn specialize(
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _key: bevy::ui_render::ui_material::UiMaterialKey<Self>,
+    ) {
+        opaque(descriptor);
+    }
 }
 /// FSR 1's sharpening on the scene image's bilinear stretch (fsr_rcas.wgsl), which the
 /// presentation camera's full-screen node draws below 100% scale unless `SKATE_UPSCALE` says
@@ -252,6 +260,24 @@ struct Sharpener {
 impl UiMaterial for Sharpener {
     fn fragment_shader() -> ShaderRef {
         "embedded://skate3rust/fsr_rcas.wgsl".into()
+    }
+    fn specialize(
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _key: bevy::ui_render::ui_material::UiMaterialKey<Self>,
+    ) {
+        opaque(descriptor);
+    }
+}
+/// The upscalers write alpha 1 over the whole window, so blending their pixels over what was
+/// there gives the same pixels; without it the pass doesn't read the target first.
+fn opaque(descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor) {
+    if let Some(target) = descriptor
+        .fragment
+        .as_mut()
+        .and_then(|fragment| fragment.targets.first_mut())
+        .and_then(Option::as_mut)
+    {
+        target.blend = None;
     }
 }
 #[derive(Resource)]
@@ -363,7 +389,7 @@ fn setup(
         ImageNode::new(target.clone()),
         UiTargetCamera(output),
     )).id();
-    commands.insert_resource(Presenter { output, node, direct: false });
+    commands.insert_resource(Presenter { output, node, direct: false, to_window: false });
     commands.insert_resource(UpscalerMaterials {
         easu: upscalers.add(Upscaler { scene: target.clone() }),
         rcas: sharpeners.add(Sharpener { scene: target.clone() }),
@@ -899,7 +925,8 @@ fn choose_presentation(
     let Some((gameplay, active)) = gameplay else {
         return;
     };
-    let enabled = options.map_or(crate::render_options::RenderOptions::default().present_direct, |options| options.present_direct);
+    let options = options.map_or_else(crate::render_options::RenderOptions::default, |options| *options);
+    let enabled = options.present_direct;
     // While bevy_horizon's splash holds the screen there is no window to draw into: the world
     // renders into the scene image instead, so its pipelines compile behind the splash.
     #[cfg(target_os = "horizon")]
@@ -922,6 +949,34 @@ fn choose_presentation(
         info!(
             "[Skate] presentation: {}",
             if direct { "the gameplay camera draws into the window" } else { "through the scene image" }
+        );
+    }
+    // The presentation camera's UI is the image's node, which covers the window, and the UI over
+    // it, so unless another camera draws into the window after it, the UI goes into the window
+    // itself and the camera's own texture is neither cleared nor copied
+    // (`RenderOptions::present_to_window`). The node draws without blending (`opaque`).
+    let to_window = !direct && !overlaid && options.present_to_window;
+    if to_window != presenter.to_window {
+        presenter.to_window = to_window;
+        if let Ok((_, mut camera, ..)) = cameras.get_mut(presenter.output) {
+            (camera.output_mode, camera.clear_color) = if to_window {
+                (bevy::camera::CameraOutputMode::Skip, ClearColorConfig::None)
+            } else {
+                (bevy::camera::CameraOutputMode::default(), ClearColorConfig::Default)
+            };
+        }
+        if to_window {
+            commands.entity(presenter.output).insert(bevy::ui_render::UiToOutput);
+        } else {
+            commands.entity(presenter.output).remove::<bevy::ui_render::UiToOutput>();
+        }
+        info!(
+            "[Skate] presentation: the presentation camera draws {}",
+            if to_window {
+                "into the window itself"
+            } else {
+                "into its own texture, which upscaling copies into the window"
+            }
         );
     }
     // Every frame, since an overlay spawned after the switch names the camera it found then.

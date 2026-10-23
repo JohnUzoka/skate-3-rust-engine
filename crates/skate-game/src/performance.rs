@@ -31,8 +31,9 @@
 //! `features` (0 or 1, `SKATE_WORLD_FEATURES`), `wfall` (0 or 1,
 //! `SKATE_WORLD_SLOT_WATERFALL`), `gpr48` (0 or 1, `SKATE_WORLD_GPR48`), `cflat` (0 or 1,
 //! `SKATE_CUTOUT_FLAT`), `slives` (0 or 1, `SKATE_WORLD_SHORT_LIVES`), `lean` (0 or 1,
-//! `SKATE_WORLD_LEAN`), `imp` (0 or 1, `SKATE_WORLD_IMPLICIT`) and `upscale` (`rcas`, `easu` or
-//! `bilinear`, `SKATE_UPSCALE`), as in render_options.rs, and `scale`, the 3D
+//! `SKATE_WORLD_LEAN`), `imp` (0 or 1, `SKATE_WORLD_IMPLICIT`), `upscale` (`rcas`, `easu` or
+//! `bilinear`, `SKATE_UPSCALE`) and `pwin` (0 or 1, `SKATE_PRESENT_TO_WINDOW`), as in
+//! render_options.rs, and `scale`, the 3D
 //! render scale in percent (one the graphics menu offers; never saved). The first step warms up
 //! for `SKATE_PERF_WARMUP`, each
 //! later one settles for `SKATE_PERF_SETTLE` (15 s unless set), and each samples for
@@ -402,7 +403,7 @@ fn parse_matrix(
     matrix: &str,
     var: impl Fn(&str) -> Option<String>,
 ) -> Vec<Step> {
-    const KEYS: [(&str, &str); 52] = [
+    const KEYS: [(&str, &str); 53] = [
         ("prepass", "SKATE_DEPTH_PREPASS"),
         ("cascades", "SKATE_SUN_CASCADES"),
         ("distance", "SKATE_SUN_SHADOW_DISTANCE"),
@@ -455,6 +456,7 @@ fn parse_matrix(
         ("lean", "SKATE_WORLD_LEAN"),
         ("imp", "SKATE_WORLD_IMPLICIT"),
         ("upscale", "SKATE_UPSCALE"),
+        ("pwin", "SKATE_PRESENT_TO_WINDOW"),
     ];
     let mut steps = Vec::new();
     // Every step starts from the launch settings, and bevy_horizon sets ZCULL's direction at
@@ -1621,6 +1623,14 @@ mod tests {
         assert_eq!(upscales, [Upscale::Bilinear, Upscale::Rcas, Upscale::Easu, Upscale::Bilinear]);
         assert_eq!(steps[1].scale, Some(75));
         assert_eq!(RenderOptions::parse(|_| None).upscale, Upscale::Rcas);
+    }
+
+    #[test]
+    fn present_to_window_is_a_matrix_setting() {
+        let steps = parse_matrix("scale=75;scale=75,pwin=0;base", |_| None);
+        let to_window: Vec<bool> =
+            steps.iter().map(|step| step.options.present_to_window).collect();
+        assert_eq!(to_window, [true, false, true]);
     }
 
     #[test]

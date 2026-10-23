@@ -99,6 +99,14 @@
 //!   `UiToOutput`). The tone's result then reaches 8-bit sRGB without a 16-bit step between, and
 //!   the UI blends in 8-bit sRGB again, as before `SKATE_PRESENT_DIRECT`; either can differ in the
 //!   last bit.
+//! - `SKATE_PRESENT_TO_WINDOW=0`: while the camera that presents the scene image runs (below 100%
+//!   render scale, or with `SKATE_PRESENT_DIRECT=0`), have it clear a texture, draw the image and
+//!   the UI into it, and have Bevy's upscaling copy that into the window, as before. Unset, it
+//!   draws them into the window itself (`UiToOutput`, its output step skipped), clears nothing,
+//!   and the image's node writes its pixels without blending: the same pixels, without the copy,
+//!   the clear or the blend's reads (graphics_menu.rs `choose_presentation`). On the Switch the
+//!   UI pass took 1.6-1.9 ms and the copy 0.3-0.5 ms a frame at 67-85% (findings 62). Not while
+//!   another camera draws into the window over it.
 //! - `SKATE_UPSCALE=easu|bilinear`: below 100% render scale, how the camera that presents the
 //!   scene image stretches it to the window (graphics_menu.rs `choose_upscaler`). Unset, FSR 1's
 //!   sharpening (RCAS, fsr_rcas.wgsl) runs on the image's bilinear stretch: five filtered reads
@@ -482,6 +490,9 @@ pub(crate) struct RenderOptions {
     pub tone_gamma: bool,
     /// `SKATE_UPSCALE`: how the scene image is stretched to the window below 100% scale.
     pub upscale: Upscale,
+    /// `SKATE_PRESENT_TO_WINDOW`: the presentation camera draws the image and the UI into the
+    /// window itself.
+    pub present_to_window: bool,
     /// `SKATE_OCCLUSION`: Bevy's GPU occlusion culling, with the depth prepass.
     pub occlusion: bool,
     /// `SKATE_OCCLUSION_SPAN`: 0 for Bevy's box test, else the finer test's span in texels.
@@ -536,6 +547,7 @@ impl Default for RenderOptions {
             tone_direct: true,
             tone_gamma: true,
             upscale: Upscale::Rcas,
+            present_to_window: true,
             occlusion: false,
             occlusion_span: 0,
             occlusion_batch: true,
@@ -696,6 +708,7 @@ impl RenderOptions {
             Some(name) if name.eq_ignore_ascii_case("bilinear") => Upscale::Bilinear,
             _ => defaults.upscale,
         };
+        let present_to_window = flag("SKATE_PRESENT_TO_WINDOW", defaults.present_to_window);
         let occlusion = flag("SKATE_OCCLUSION", defaults.occlusion);
         let occlusion_span = var("SKATE_OCCLUSION_SPAN")
             .and_then(|value| value.trim().parse::<u32>().ok())
@@ -813,6 +826,7 @@ impl RenderOptions {
             tone_direct,
             tone_gamma,
             upscale,
+            present_to_window,
             occlusion,
             occlusion_span,
             occlusion_batch,
