@@ -63,10 +63,23 @@ fn discover_with(assets: &Path, test_world: bool) -> Vec<Entry> {
     maps
 }
 
-/// The map to start on without `--map`: the default pointer's. With none saved (no pointer, or
-/// `null`), the test world where it is offered; elsewhere the map the PC installer makes the
-/// default (tools/asset_pipeline/install.py): University, else the first, else an error.
+/// The map to start on without `--map`: the installed map `SKATE_START_MAP` names (its file's
+/// name without `.skate`), for a launch that must start where earlier ones did whatever was
+/// played last, as the Switch's `options.txt` can set it; it leaves the saved default as it is.
+/// Otherwise the default pointer's. With none saved (no pointer, or `null`), the test world where
+/// it is offered; elsewhere the map the PC installer makes the default
+/// (tools/asset_pipeline/install.py): University, else the first, else an error.
 pub(crate) fn start_map(assets: &Path) -> Result<Option<PathBuf>, String> {
+    if let Some(name) = std::env::var("SKATE_START_MAP").ok().filter(|name| !name.trim().is_empty()) {
+        let maps = discover_with(assets, false);
+        match maps.iter().find(|m| m.label.eq_ignore_ascii_case(name.trim())).and_then(|m| m.path.clone()) {
+            Some(path) => {
+                eprintln!("[Skate] SKATE_START_MAP={name}: starting {}, not the saved default", path.display());
+                return Ok(Some(path));
+            }
+            None => eprintln!("[Skate] SKATE_START_MAP={name}: no installed map by that name; starting the saved default"),
+        }
+    }
     start_map_with(assets, test_world_offered())
 }
 

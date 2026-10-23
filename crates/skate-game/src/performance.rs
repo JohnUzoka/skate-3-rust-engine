@@ -35,7 +35,8 @@
 //! `bilinear`, `SKATE_UPSCALE`) and `pwin` (0 or 1, `SKATE_PRESENT_TO_WINDOW`), as in
 //! render_options.rs, and `scale`, the 3D
 //! render scale in percent (one the graphics menu offers; never saved). The first step warms up
-//! for `SKATE_PERF_WARMUP`, each
+//! for `SKATE_PERF_WARMUP` from when the start map is in play (it loads behind the loading
+//! screen; `SKATE_START_MAP` picks it, map_library.rs), each
 //! later one settles for `SKATE_PERF_SETTLE` (15 s unless set), and each samples for
 //! `SKATE_PERF_SAMPLE` and writes its own report (`perf.json`, `perf-2.json`...). For example
 //! `base;prepass=0;cascades=1,distance=40;filter=hardware;draw=300;scale=50`.
@@ -531,6 +532,7 @@ pub(crate) struct Performance {
     /// Seconds the current step waited past its warmup or settle for pipelines to compile.
     pipeline_wait: f32,
     pipeline_wait_logged: bool,
+    map_wait_logged: bool,
     first_frame: Option<Instant>,
     frame_started: Option<Instant>,
     main_elapsed: Duration,
@@ -571,6 +573,7 @@ impl Performance {
             sampling_started: None,
             pipeline_wait: 0.0,
             pipeline_wait_logged: false,
+            map_wait_logged: false,
             first_frame: None,
             frame_started: None,
             main_elapsed: Duration::ZERO,
@@ -824,6 +827,7 @@ fn frame_end(
     cameras: Query<(&Camera, &GlobalTransform, &Projection), With<crate::camera::GameplayCamera>>,
     frame_state: Option<Res<crate::retail_render::FrameStateData>>,
     mut clock: ResMut<Time<Virtual>>,
+    transition: Option<Res<crate::map_transition::MapTransition>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if performance.finished {
@@ -831,6 +835,16 @@ fn frame_end(
     }
     if performance.applied != Some(performance.step) {
         apply_step(&mut performance, menu.as_deref_mut(), options.as_deref_mut());
+    }
+    // The start map loads behind the loading screen, Downtown's for over a minute on the console:
+    // the first step's warmup starts once it is in play, not at the loading screen's first frame.
+    if performance.step == 0 && !performance.sampling && transition.as_deref().is_some_and(|t| t.busy()) {
+        if !performance.map_wait_logged {
+            performance.map_wait_logged = true;
+            info!("SKATE_PERF waiting for the map to load before the warmup");
+        }
+        performance.step_started = Some(Instant::now());
+        return;
     }
     let started = performance.step_started.or(performance.first_frame);
     let elapsed = started.map_or(0.0, |started| started.elapsed().as_secs_f32());
