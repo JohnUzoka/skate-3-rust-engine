@@ -179,6 +179,61 @@ fn biquad_long_decay_is_bit_identical() {
     }
 }
 
+/// The lockstep copies (`biquad2` … `biquad4`) against `biquad` on each channel, on one path at a
+/// time (both when the CPU has FMA): exact bits for stable filters on finite input; for wild
+/// coefficients and histories the NaNs fall in the same places, and only a NaN's sign / payload
+/// may differ (counted), as between the two paths.
+#[test]
+fn biquad_lanes_match_biquad() {
+    let paths: Vec<Path> = std::iter::once(Path::PLAIN).chain(Path::fma()).collect();
+    let mut rng = Rng(0x1357_9BDF);
+    let mut nan_payloads = 0usize;
+    for path in paths {
+        for round in 0..3000 {
+            let wild = round % 4 == 3;
+            let k = if wild { coefficients(&mut rng, true) } else { stable(&mut rng) };
+            let lanes = 2 + round % 3;
+            let len = LENGTHS[round % LENGTHS.len()];
+            let mut starts = [[0.0f32; 4]; 4];
+            let mut inputs: [Vec<f32>; 4] = Default::default();
+            for c in 0..lanes {
+                starts[c] = if wild { [rng.any(), rng.any(), rng.any(), rng.any()] } else { [rng.unit(), rng.unit(), rng.unit(), rng.unit()] };
+                inputs[c] = match (round + c) % 4 {
+                    0 => vec![0.0; len],
+                    1 if wild => (0..len).map(|_| rng.any()).collect(),
+                    _ => (0..len).map(|_| rng.sample()).collect(),
+                };
+            }
+            let (mut want_h, mut want_x) = (starts, inputs.clone());
+            for c in 0..lanes {
+                path.biquad(&k, &mut want_h[c], &mut want_x[c]);
+            }
+            let (mut got_h, mut got_x) = (starts, inputs);
+            {
+                let [h0, h1, h2, h3] = &mut got_h;
+                let [x0, x1, x2, x3] = &mut got_x;
+                match lanes {
+                    2 => path.biquad2(&k, [h0, h1], [x0, x1]),
+                    3 => path.biquad3(&k, [h0, h1, h2], [x0, x1, x2]),
+                    _ => path.biquad4(&k, [h0, h1, h2, h3], [x0, x1, x2, x3]),
+                }
+            }
+            for c in 0..lanes {
+                let finite = !wild && want_x[c].iter().chain(&want_h[c]).all(|v| v.is_finite());
+                if finite {
+                    assert_eq!(raw(&got_x[c]), raw(&want_x[c]), "{} round {round} lane {c}: {k:?}", path.name());
+                    assert_eq!(raw(&got_h[c]), raw(&want_h[c]), "{} round {round} lane {c}", path.name());
+                } else {
+                    assert_eq!(bits(&got_x[c]), bits(&want_x[c]), "{} round {round} lane {c}: {k:?}", path.name());
+                    assert_eq!(bits(&got_h[c]), bits(&want_h[c]), "{} round {round} lane {c}", path.name());
+                    nan_payloads += nan_bits_differ(&got_x[c], &want_x[c]) + nan_bits_differ(&got_h[c], &want_h[c]);
+                }
+            }
+        }
+    }
+    eprintln!("biquad lanes: {nan_payloads} NaN values with a different sign / payload (all else exact)");
+}
+
 #[test]
 fn trig_copies_are_bit_identical() {
     let Some(fma) = fma_path() else { return };

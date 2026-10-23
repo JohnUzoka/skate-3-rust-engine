@@ -31,6 +31,62 @@ pub fn biquad(k: &Coefficients, history: &mut [f32; 4], samples: &mut [f32]) {
     *history = [x1, x2, y1, y2];
 }
 
+/// [`biquad`] on `N` channels of one length in lockstep, each with its own history. Every channel
+/// runs [`biquad`]'s arithmetic in [`biquad`]'s order, so it gets the bits [`biquad`] gives it; the
+/// channels' feedback chains don't depend on each other, so the CPU overlaps them, where one
+/// channel waits on two fused multiply-adds a sample.
+#[inline(always)]
+fn biquad_lanes<const N: usize>(k: &Coefficients, history: [&mut [f32; 4]; N], samples: [&mut [f32]; N]) {
+    let len = samples[0].len();
+    assert!(samples.iter().all(|s| s.len() == len), "lockstep channels have one length");
+    let mut x1 = [0.0f32; N];
+    let mut x2 = [0.0f32; N];
+    let mut y1 = [0.0f32; N];
+    let mut y2 = [0.0f32; N];
+    for (c, h) in history.iter().enumerate() {
+        [x1[c], x2[c], y1[c], y2[c]] = **h;
+    }
+    let samples = samples.map(|s| &mut s[..len]);
+    for n in 0..len {
+        let position = n % 8;
+        for c in 0..N {
+            let x = samples[c][n];
+            let t = match position {
+                0 => k.b1.mul_add(x1[c], k.b2.mul_add(x2[c], k.b0 * x + BIAS)),
+                1 => k.b2.mul_add(x2[c], k.b1.mul_add(x1[c], k.b0 * x + BIAS)),
+                _ => k.b0.mul_add(x, k.b2.mul_add(x2[c], k.b1 * x1[c] + BIAS)),
+            };
+            let y = (-k.a2).mul_add(y2[c], (-k.a1).mul_add(y1[c], t));
+            x2[c] = x1[c];
+            x1[c] = x;
+            y2[c] = y1[c];
+            y1[c] = y;
+            samples[c][n] = y;
+        }
+    }
+    for (c, h) in history.into_iter().enumerate() {
+        *h = [x1[c], x2[c], y1[c], y2[c]];
+    }
+}
+
+/// [`biquad_lanes`] on two channels.
+#[inline(always)]
+pub fn biquad2(k: &Coefficients, history: [&mut [f32; 4]; 2], samples: [&mut [f32]; 2]) {
+    biquad_lanes(k, history, samples);
+}
+
+/// [`biquad_lanes`] on three channels.
+#[inline(always)]
+pub fn biquad3(k: &Coefficients, history: [&mut [f32; 4]; 3], samples: [&mut [f32]; 3]) {
+    biquad_lanes(k, history, samples);
+}
+
+/// [`biquad_lanes`] on four channels.
+#[inline(always)]
+pub fn biquad4(k: &Coefficients, history: [&mut [f32; 4]; 4], samples: [&mut [f32]; 4]) {
+    biquad_lanes(k, history, samples);
+}
+
 /// The feedback half of [`biquad`] with the feed-forward sum fixed at the bias
 /// (`skate_audio::dsp::biquad::kernel_silent_tail` after its run-time check). `y` = {y1, y2}.
 #[inline(always)]

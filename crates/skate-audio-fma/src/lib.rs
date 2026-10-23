@@ -4,8 +4,9 @@
 //! (~5 ns); with it, one `vfmadd` instruction. Both are the exactly rounded a·b + c, so the two
 //! copies give the same bits (doc 11 "Hardware FMA dispatch": every e2e render byte-identical,
 //! and the tests below). The loops that call `mul_add` per sample live here:
-//! - the Direct Form I biquad kernel and its silent-tail feedback loop (`dsp::biquad`, used by the
-//!   high/low-pass, peaking, shelf and the FSS allpasses);
+//! - the Direct Form I biquad kernel, its lockstep copies for two to four channels and its
+//!   silent-tail feedback loop (`dsp::biquad`, used by the high/low-pass, peaking, shelf and the
+//!   FSS allpasses);
 //! - the FrequencyShiftSsb oscillator with its polynomial `sin` / `cos` (`dsp::fss`);
 //! - the linear resampler (`dsp::resample`, every voice).
 //!
@@ -180,6 +181,13 @@ kernels! {
     fn gain_ramp(samples: &mut [f32], start: f32, step: f32);
     /// Direct Form I biquad over one block of one channel, in place; history {x1, x2, y1, y2}.
     fn biquad(k: &Coefficients, history: &mut [f32; 4], samples: &mut [f32]);
+    /// [`biquad`] on two channels of one length in lockstep, each with its own history: each
+    /// channel gets the bits [`biquad`] gives it, and the two feedback chains overlap.
+    fn biquad2(k: &Coefficients, history: [&mut [f32; 4]; 2], samples: [&mut [f32]; 2]);
+    /// [`biquad2`] on three channels.
+    fn biquad3(k: &Coefficients, history: [&mut [f32; 4]; 3], samples: [&mut [f32]; 3]);
+    /// [`biquad2`] on four channels.
+    fn biquad4(k: &Coefficients, history: [&mut [f32; 4]; 4], samples: [&mut [f32]; 4]);
     /// The biquad's feedback loop with the feed-forward sum fixed at [`BIAS`] (silent input,
     /// settled inputs); `y` = {y1, y2}.
     fn biquad_feedback(k: &Coefficients, y: &mut [f32; 2], samples: &mut [f32]);

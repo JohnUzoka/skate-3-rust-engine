@@ -8,7 +8,7 @@
 //! While filtering ω is raised to FLOOR, and the coefficients are rebuilt when ω or the gain differ
 //! from the cached pair (`+216` / `+220`; the bypass path caches its unclamped ω too). The kernel is
 //! the shared biquad kernel `sub_82B43AF8` ([`super::biquad::kernel`]).
-use super::biquad::{CEIL, Coefficients, FLOOR, TWO_PI, kernel_block};
+use super::biquad::{CEIL, Coefficients, FLOOR, TWO_PI, kernel_channels};
 
 /// α = sin ω × this (`0x822F8E50`, not exactly 1/√2).
 pub const ALPHA_SCALE: f32 = f32::from_bits(0x3F35_04EF);
@@ -78,9 +78,7 @@ impl HighShelfIir2 {
             self.coefficients = coefficients(w, self.gain);
             self.cached = Some(key);
         }
-        for (ch, samples) in channels.iter_mut().enumerate().take(8) {
-            kernel_block(&self.coefficients, &mut self.history[ch], samples);
-        }
+        kernel_channels(&self.coefficients, &mut self.history, channels);
     }
 }
 

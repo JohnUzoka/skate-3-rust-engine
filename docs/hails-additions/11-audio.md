@@ -4852,3 +4852,37 @@ Full write-up: [15](15-world-audio.md), section "Follow-ups". In short:
   0.94 (was 0.045 / 0.065 and 0.005 / 0.014 with the NPC always dead ahead). No engine change.
 - **NPC board slide observed** in session 180430 (an NPC bail, two posts, `board_scrapes` 62–68 ms later).
 - Local player byte-identical (e2e bench, all sets).
+
+### Optimisation pass 3: equal channels and lockstep filters (2026-10-23, Switch port)
+
+**Problem.** On the Switch the audio thread is busy about a fifth of a core (dev17's console profile, sk8 findings
+62 §8), and the game's task threads wait for the runtime lock while a block renders. The biquad kernel was 26 % of
+the thread's time, the peaking EQs 19 %: the eEQChain buses run two of them on six channels each. The kernel is
+latency-bound: each sample waits on the previous one's two fused multiply-adds, which the A57 takes longer over
+than an x86 core.
+
+**Changes (bit-identical by construction and by test).** `dsp::biquad::kernel_channels` runs a filter's channels for
+`Iir2`, `PeakingIir2` and `HighShelfIir2`:
+1. A channel whose input and history are bit-identical to an earlier channel's gets that channel's output and
+   history. `PeakingIir2` did this for silent channels only, so on a bus nothing plays into the second EQ, which
+   sees the first's bias response on all six channels, ran the kernel six times; it now runs it once.
+2. The channels `kernel_block` would hand straight to the kernel (blocks that aren't 8-periodic) run in lockstep,
+   two to four of one length at a time (`skate_audio_fma::biquad2`, `biquad3`, `biquad4`, plain and FMA copies as
+   in "Hardware FMA dispatch"). Each channel's arithmetic and its order are the kernel's; the channels' feedback
+   chains overlap.
+
+**Proof.**
+- `skate_audio_fma` `biquad_lanes_match_biquad`: each lane against `biquad`, 2, 3 and 4 lanes, stable and wild
+  coefficients and histories, on both paths.
+- `dsp::biquad::kernel_channels_matches_the_plain_kernel`: every coefficient set, one to eight channels, twins of
+  input and history (or of only one), mixed lengths, silent / -0.0 / constant / noise blocks, long enough to settle.
+- `dsp::peaking::a_bus_chain_matches_the_plain_kernel`: a bus's two EQs in series, idle, a voice over the six
+  channels (two pairs at one level), idle again, the parameters changing every 12 blocks.
+- A NaN comes out where the kernel puts one; on the host its sign and payload matched too (0 differences).
+- `tests/render_speed.rs` (ignored; `--release -- --ignored --nocapture`): two synthetic scenes with the install's
+  eight eEQChain records, the reverb network, the FlangeSub returns and a grain truck. Their output hashes are the
+  same before and after.
+
+**Speed (host, x86-64 with hardware FMA, µs a block, mean / p50).** 24 voices over the eight buses: 294.6 / 272.6
+before, 272.6 / 251.1 after. 8 voices on bus 0: 155.6 / 141.1 before, 140.5 / 131.5 after. The console figure is
+the audio thread's share in the next CPU profile.

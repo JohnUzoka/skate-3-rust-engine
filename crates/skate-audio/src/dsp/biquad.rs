@@ -98,9 +98,7 @@ impl Iir2 {
             self.cached = w;
         }
         self.filtering = true;
-        for (ch, samples) in channels.iter_mut().enumerate().take(8) {
-            kernel_block(&self.coefficients, &mut self.history[ch], samples);
-        }
+        kernel_channels(&self.coefficients, &mut self.history, channels);
     }
 }
 
@@ -126,6 +124,75 @@ pub fn kernel(k: &Coefficients, history: &mut [f32; 4], samples: &mut [f32]) {
 /// The block holds only `+0.0` samples (bit pattern 0).
 pub fn silent(samples: &[f32]) -> bool {
     samples.iter().all(|v| v.to_bits() == 0)
+}
+
+/// The two blocks have one length and the same bits.
+pub fn same_bits(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len()
+        && a.chunks(8).zip(b.chunks(8)).all(|(a, b)| a.iter().zip(b).fold(true, |same, (x, y)| same & (x.to_bits() == y.to_bits())))
+}
+
+/// One filter's [`kernel_block`] over its channels (the first 8, history `[ch]` each),
+/// bit-identical to running [`kernel`] on each (doc 11 "Optimisation pass 3"):
+/// - A channel whose input and history are bit-identical to an earlier channel's gets that
+///   channel's output and history: the kernel is a pure function of the coefficients, the history
+///   and the input. The six channels of an eEQChain bus nothing plays into stay equal through both
+///   EQs: silent into the first, the first's bias response into the second.
+/// - The channels [`kernel_block`] would hand straight to [`kernel`] (blocks that aren't
+///   8-periodic) run in lockstep, up to four of one length at a time
+///   (`skate_audio_fma::biquad2` … `biquad4`). Each channel's arithmetic is [`kernel`]'s, and the
+///   CPU overlaps their feedback chains, where one channel waits on two fused multiply-adds a
+///   sample. A NaN comes out where [`kernel`] puts one; only its sign / payload can differ.
+pub fn kernel_channels(k: &Coefficients, history: &mut [[f32; 4]; 8], channels: &mut [&mut [f32]]) {
+    let n = channels.len().min(8);
+    let mut twin: [Option<usize>; 8] = [None; 8];
+    for ch in 1..n {
+        let before = history[ch].map(f32::to_bits);
+        twin[ch] = (0..ch).find(|&j| twin[j].is_none() && history[j].map(f32::to_bits) == before && same_bits(channels[j], channels[ch]));
+    }
+    let (mut busy, mut count) = ([0usize; 8], 0);
+    for ch in 0..n {
+        if twin[ch].is_some() {
+            continue;
+        }
+        if periodic8(channels[ch]) {
+            kernel_block(k, &mut history[ch], channels[ch]);
+        } else {
+            busy[count] = ch;
+            count += 1;
+        }
+    }
+    let mut busy = &busy[..count];
+    while let Some(&first) = busy.first() {
+        let len = channels[first].len();
+        let lanes = busy.iter().take(4).take_while(|&&ch| channels[ch].len() == len).count();
+        match *busy {
+            [a, b, c, d, ..] if lanes == 4 => {
+                let h = history.get_disjoint_mut([a, b, c, d]).expect("distinct channels");
+                let s = channels.get_disjoint_mut([a, b, c, d]).expect("distinct channels");
+                skate_audio_fma::biquad4(k, h, s.map(|s| &mut **s));
+            }
+            [a, b, c, ..] if lanes == 3 => {
+                let h = history.get_disjoint_mut([a, b, c]).expect("distinct channels");
+                let s = channels.get_disjoint_mut([a, b, c]).expect("distinct channels");
+                skate_audio_fma::biquad3(k, h, s.map(|s| &mut **s));
+            }
+            [a, b, ..] if lanes == 2 => {
+                let h = history.get_disjoint_mut([a, b]).expect("distinct channels");
+                let s = channels.get_disjoint_mut([a, b]).expect("distinct channels");
+                skate_audio_fma::biquad2(k, h, s.map(|s| &mut **s));
+            }
+            _ => kernel(k, &mut history[first], channels[first]),
+        }
+        busy = &busy[lanes..];
+    }
+    for ch in 0..n {
+        if let Some(j) = twin[ch] {
+            let (done, rest) = channels.split_at_mut(ch);
+            rest[0].copy_from_slice(done[j]);
+            history[ch] = history[j];
+        }
+    }
 }
 
 /// Every group of 8 samples is bit-identical to the first (a silent or constant block, e.g. a bus
@@ -351,5 +418,82 @@ mod tests {
             }
         }
         assert!(settled > 1000 && tails > 100, "both shortcuts ran: settled {settled}, tails {tails}");
+    }
+
+    /// NaNs mapped to one marker: a NaN's sign / payload is the one thing [`kernel_channels`]'s
+    /// lockstep copies may change.
+    fn marked(x: &[f32]) -> Vec<u32> {
+        x.iter().map(|v| if v.is_nan() { 0x7FC0_0000 } else { v.to_bits() }).collect()
+    }
+
+    /// [`kernel_channels`] (twin copies, lockstep groups, [`kernel_block`]'s shortcuts) against
+    /// [`kernel`] on each channel: every coefficient set, one to eight channels, a block of 256 or
+    /// a shorter one mixed in, channels that are copies of an earlier one (input and history, or
+    /// only one of the two), silent, -0.0, constant and noisy channels, over runs long enough for
+    /// the filters to settle. Exact bits unless a NaN came out.
+    #[test]
+    fn kernel_channels_matches_the_plain_kernel() {
+        let mut seed = 0x0BAD_5EEDu32;
+        let mut draw = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let mut nan_payloads = 0usize;
+        for k in coefficient_sets() {
+            let (mut ha, mut hb) = ([[0.0f32; 4]; 8], [[0.0f32; 4]; 8]);
+            for block in 0..600usize {
+                let channels = 1 + block % 8;
+                let mut input: Vec<Vec<f32>> = Vec::new();
+                for ch in 0..channels {
+                    let len = if block % 50 == 7 && ch % 3 == 2 { 64 } else { 256 };
+                    let kind = (draw() % 8) as usize;
+                    let samples: Vec<f32> = match kind {
+                        // Twins: an earlier channel's input (its history may or may not match).
+                        0 | 1 if ch > 0 => input[(draw() as usize) % ch].clone(),
+                        2 => vec![0.0; len],
+                        3 => vec![-0.0; len],
+                        4 => vec![0.25; len],
+                        _ if block % 200 > 150 => vec![0.0; len],
+                        _ => (0..len).map(|_| (draw() >> 8) as f32 / (1u32 << 23) as f32 - 1.0).collect(),
+                    };
+                    input.push(samples);
+                }
+                // Now and then a history copied from another channel, or knocked off by one value.
+                if block % 37 == 0 && channels > 1 {
+                    let (from, to) = ((draw() as usize) % channels, (draw() as usize) % channels);
+                    ha[to] = ha[from];
+                    hb[to] = hb[from];
+                }
+                if block % 41 == 0 {
+                    let ch = (draw() as usize) % channels;
+                    ha[ch][2] += 1e-3;
+                    hb[ch][2] += 1e-3;
+                }
+                let (mut xa, mut xb) = (input.clone(), input);
+                for (ch, x) in xa.iter_mut().enumerate() {
+                    kernel(&k, &mut ha[ch], x);
+                }
+                {
+                    let mut planes: Vec<&mut [f32]> = xb.iter_mut().map(|x| &mut x[..]).collect();
+                    kernel_channels(&k, &mut hb, &mut planes);
+                }
+                for ch in 0..channels {
+                    let exact = xa[ch].iter().chain(&ha[ch]).all(|v| !v.is_nan());
+                    if exact {
+                        assert_eq!(bits(&xa[ch]), bits(&xb[ch]), "{k:?} block {block} channel {ch}");
+                        assert_eq!(bits(&ha[ch]), bits(&hb[ch]), "{k:?} block {block} channel {ch}");
+                    } else {
+                        assert_eq!(marked(&xa[ch]), marked(&xb[ch]), "{k:?} block {block} channel {ch}");
+                        assert_eq!(marked(&ha[ch]), marked(&hb[ch]), "{k:?} block {block} channel {ch}");
+                        nan_payloads += xa[ch].iter().zip(&xb[ch]).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+                        // Keep the two runs on one history from here, as the comparison allows.
+                        hb[ch] = ha[ch];
+                    }
+                }
+            }
+        }
+        eprintln!("kernel_channels: {nan_payloads} NaN samples with a different sign / payload (all else exact)");
     }
 }
