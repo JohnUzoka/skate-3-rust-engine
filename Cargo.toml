@@ -30,4 +30,5 @@ opt-level = 3
 bevy_pbr = { path = "vendor/bevy_pbr" }
 bevy_core_pipeline = { path = "vendor/bevy_core_pipeline" }
 bevy_ui_render = { path = "vendor/bevy_ui_render" }
+bevy_ui = { path = "vendor/bevy_ui" }
 sdl3-sys = { path = "vendor/sdl3-sys" }

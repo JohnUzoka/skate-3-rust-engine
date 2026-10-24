@@ -464,6 +464,37 @@ One opt-in change, inert unless the game asks for it:
   (`crates/skate-game/src/retail_exposure.rs`, `choose_tone_output`;
   `SKATE_TONE_DIRECT=0` turns that off).
 
+## Closed menus skip the UI walks (Switch port)
+
+`bevy_ui` is vendored from crates.io 0.18.1 with its original licenses. In
+0.18.1, three systems walk every UI node of every root on every frame, changed
+or not: `ui_layout_system` (the children sync, taffy's layout and rounding, and
+`update_uinode_geometry_recursive`), `ui_stack_system` and
+`update_clipping_system`. The game keeps its closed menus spawned under roots
+set to `Display::None`, so most of those nodes are hidden. On the Switch at
+0.1.3-rc2 the walks cost about 2 ms of the main thread's 12.5 ms a frame
+(`ui_layout_system` alone 11.4 % of its samples), with every menu closed. The
+changes, each marked `[Skate 3 patch]`:
+
+- `src/layout/mod.rs`, `ui_layout_system`: a root that is `Display::None`,
+  unchanged (`Node` and its render-target info) and already zero-sized is
+  parked: skipped entirely. Its subtree was zeroed the frame it was hidden, so
+  nothing in it is drawn or picked. Nodes are still synced to taffy every frame
+  as before; when the root is shown again, its subtree's children lists are
+  synced in full (`update_children_recursively`'s `resync`), so children added
+  or removed while it was parked are laid out.
+- `src/stack.rs`, `ui_stack_system`: roots and `GlobalZIndex` nodes that are
+  `Display::None` are left out of the stack, so they aren't walked, drawn or
+  picked. A button in a closed menu keeps its last `Interaction` until the
+  menu opens again (a mouse release still resets `Pressed` everywhere).
+- `src/update.rs`, `update_clipping_system`: hidden roots aren't walked.
+
+Limits: only roots are parked, not hidden nodes inside a shown tree; a node
+moved from a shown tree into a parked one would keep its old size until the
+root is shown. The game does neither. Tests:
+`layout::tests::hidden_root_is_parked_then_synced_when_shown` and
+`stack::tests::hidden_root_is_left_out_of_the_stack`.
+
 ## SDL3 static C runtime
 
 `sdl3-sys` is vendored from crates.io 0.7.1+SDL-3.4.16 with its original license.
