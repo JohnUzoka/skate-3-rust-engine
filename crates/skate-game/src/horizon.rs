@@ -13,6 +13,8 @@
 //!   - `no_pipelined_rendering`: render on the main thread instead of Bevy's render thread
 //!   - `multi_threaded`: run the main world's systems on Bevy's task pool. Without it they run
 //!     one at a time on the main thread, the default since 0.1.3-rc2 (findings 63 §6.2)
+//!   - `multi_threaded_extract`: with one thread for the main world, keep the render world's
+//!     extract multi-threaded too, as before 0.1.3-rc4 (findings 66 §3)
 //!   - `rgba_pages`: keep the world texture pages RGBA8, four times the memory of the BC3 they
 //!     are otherwise stored as (retail_render.rs `PageFormat`)
 //!   - `no_upload_throttle`: hand Bevy's mesh allocator every new mesh at once and never wait for
@@ -230,6 +232,21 @@ pub(crate) fn install(app: &mut App) {
         for label in main_schedules {
             app.edit_schedule(label, |schedule| {
                 schedule.set_executor_kind(ExecutorKind::SingleThreaded);
+            });
+        }
+        // The render world's extract runs on the main thread as well. Multi-threaded, it spawns
+        // its small systems onto the task pool, which the render thread keeps busy, and waits for
+        // them: about 1.2 ms a frame at rc2, more than its 0.76 ms of work (findings 66 §3).
+        // `multi_threaded_extract` in options.txt keeps Bevy's executor for it.
+        if option("multi_threaded_extract") {
+            eprintln!("[Skate] extract: multi-threaded (options.txt multi_threaded_extract)");
+        } else if let Some(render_app) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            eprintln!("[Skate] extract: single-threaded (options.txt `multi_threaded_extract` turns it off)");
+            render_app.edit_schedule(bevy::render::ExtractSchedule, |schedule| {
+                schedule.set_executor_kind(ExecutorKind::SingleThreaded);
+                // A new executor applies deferred commands at its end. Extract's are applied on
+                // the render thread instead (bevy_render `apply_extract_commands`), as before.
+                schedule.set_apply_final_deferred(false);
             });
         }
     }
