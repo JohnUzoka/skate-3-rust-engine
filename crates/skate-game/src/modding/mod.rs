@@ -408,7 +408,13 @@ pub(crate) fn release_ground(world: &mut World) {
     }
 }
 
-fn maintenance(world: &mut World) {
+fn maintenance(world: &mut World, mut scanned_once: Local<bool>) {
+    // Listing the mods folder on the SD card waits behind any other write to it, for 100-260 ms
+    // (findings 63 §6.3). On the Switch, list it once, on a map change (below) and while the
+    // mods menu is open. A PC keeps polling every 500 ms for hot reload.
+    let menu_open = world.get_resource::<ModMenu>().is_some_and(|menu| menu.open);
+    let poll = cfg!(not(target_os = "horizon")) || menu_open || !*scanned_once;
+    *scanned_once = true;
     world.resource_scope(|world, mut mods: Mut<Mods>| {
         let generation = world
             .resource::<crate::map_transition::CurrentMap>()
@@ -430,7 +436,9 @@ fn maintenance(world: &mut World) {
             sync_audio_content(world, &mods);
             return;
         }
-        mods.manager.scan(false);
+        if poll {
+            mods.manager.scan(false);
+        }
         audio_reloads(world, &mut mods);
         sync_audio_content(world, &mods);
         if !mods.runtime_busy() {

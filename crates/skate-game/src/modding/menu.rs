@@ -360,7 +360,9 @@ fn draw(
     mut logged: Local<String>,
     audio: Option<Res<crate::game_audio::AudioContent>>,
 ) {
-    root.display = if menu.open { Display::Flex } else { Display::None };
+    // Only on change: Bevy counts every write as one, and lays the UI out again (findings 63 §6.2).
+    let display = if menu.open { Display::Flex } else { Display::None };
+    if root.display != display { root.display = display; }
     if !menu.open { return; }
     let entries = rows(&menu, &mods);
     let selected = menu.selected.min(entries.len()-1);

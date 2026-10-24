@@ -1047,11 +1047,15 @@ fn labels(
     (audio, camera_angle): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>),
     mut buttons: Query<(&MenuRow, &Interaction, &mut BackgroundColor, &mut Node), Without<MenuRoot>>,
 ) {
-    root.display = if menu.open && !travel.open && !customiser.open && !custom_models.open && !mods.open {
+    // Only on change: Bevy counts every write as one, and lays the UI out again (findings 63 §6.2).
+    let display = if menu.open && !travel.open && !customiser.open && !custom_models.open && !mods.open {
         Display::Flex
     } else {
         Display::None
     };
+    if root.display != display {
+        root.display = display;
+    }
     if !menu.open {
         return;
     }

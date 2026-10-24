@@ -11,7 +11,8 @@
 //! - `sdmc:/switch/skate3rust/options.txt`: optional, one option per line:
 //!   - `log=<filter>`: the tracing filter (`RUST_LOG` on a PC)
 //!   - `no_pipelined_rendering`: render on the main thread instead of Bevy's render thread
-//!   - `single_threaded`: run every system on the main thread
+//!   - `multi_threaded`: run the main world's systems on Bevy's task pool. Without it they run
+//!     one at a time on the main thread, the default since 0.1.3-rc2 (findings 63 §6.2)
 //!   - `rgba_pages`: keep the world texture pages RGBA8, four times the memory of the BC3 they
 //!     are otherwise stored as (retail_render.rs `PageFormat`)
 //!   - `no_upload_throttle`: hand Bevy's mesh allocator every new mesh at once and never wait for
@@ -210,8 +211,15 @@ pub(crate) fn install(app: &mut App) {
         });
     }
     app.add_systems(Last, start_memory_log);
-    if option("single_threaded") {
-        eprintln!("[Skate] options.txt: single_threaded");
+    // One thread for the main world is the default (findings 63 §6.2: 52.5 to 57.5 fps at 67 %
+    // while skating). `multi_threaded` in options.txt gives it Bevy's task pool back.
+    let single_threaded = !option("multi_threaded");
+    if single_threaded {
+        eprintln!("[Skate] main world: single-threaded (options.txt `multi_threaded` turns it off)");
+    } else {
+        eprintln!("[Skate] main world: multi-threaded (options.txt multi_threaded)");
+    }
+    if single_threaded {
         let main_schedules = [
             Main.intern(), PreStartup.intern(), Startup.intern(), PostStartup.intern(),
             First.intern(), PreUpdate.intern(), RunFixedMainLoop.intern(), FixedMain.intern(),

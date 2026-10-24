@@ -209,12 +209,16 @@ fn update_overlay(
     camera: Res<crate::camera::CameraRuntime>,
     mut roots: Query<&mut Node, With<DebugCamOverlay>>,
 ) {
+    // Only on change: Bevy counts every write as one, and lays the UI out again (findings 63 §6.2).
+    let display = if camera.manual_cam.manual_cam_active() {
+        Display::Flex
+    } else {
+        Display::None
+    };
     for mut node in &mut roots {
-        node.display = if camera.manual_cam.manual_cam_active() {
-            Display::Flex
-        } else {
-            Display::None
-        };
+        if node.display != display {
+            node.display = display;
+        }
     }
 }
 

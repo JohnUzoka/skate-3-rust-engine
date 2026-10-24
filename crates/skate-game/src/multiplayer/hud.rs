@@ -47,6 +47,7 @@ pub(super) fn draw(
     net: Res<Multiplayer>, windows: Query<&Window>,
     mut nodes: Query<(&mut Node, Option<&RosterRoot>, Option<&RosterRow>, Option<&RosterText>), Or<(With<RosterRoot>, With<RosterRow>, With<RosterText>)>>,
     mut labels: Query<(&mut Text, &mut TextFont, Option<&RosterText>, Option<&RosterTitle>), Or<(With<RosterText>, With<RosterTitle>)>>,
+    mut drawn: Local<Option<(Vec<(String, String)>, u32)>>,
 ) {
     let scale = windows.iter().next().map_or(1., |w| (w.height() / 1080.).clamp(0.65, 2.));
     let mut roster = Vec::new();
@@ -65,6 +66,13 @@ pub(super) fn draw(
             roster.push((name, ping.map_or_else(|| "--".into(), |ms| format!("{ms} ms"))));
         }
     }
+    // Write the roster's nodes and texts only when the roster or the window's scale changed:
+    // Bevy counts every write as a change and lays out and shapes the text again (findings 63 §6.2).
+    let key = (roster.clone(), scale.to_bits());
+    if drawn.as_ref() == Some(&key) {
+        return;
+    }
+    *drawn = Some(key);
     for (mut node, root, row, field) in &mut nodes {
         if root.is_some() {
             node.display = if roster.is_empty() { Display::None } else { Display::Flex };

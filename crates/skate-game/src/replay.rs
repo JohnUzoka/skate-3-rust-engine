@@ -288,12 +288,12 @@ fn update_ui(
     mut labels: Query<&mut Text, With<ReplayLabel>>,
     mut bars: Query<&mut Node, (With<Playhead>, Without<ReplayUi>)>,
 ) {
+    // Only on change: Bevy counts every write as one, and lays the UI out again (findings 63 §6.2).
+    let display = if replay.active { Display::Flex } else { Display::None };
     for mut node in &mut roots {
-        node.display = if replay.active {
-            Display::Flex
-        } else {
-            Display::None
-        };
+        if node.display != display {
+            node.display = display;
+        }
     }
     if !replay.active {
         return;
