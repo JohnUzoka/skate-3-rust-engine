@@ -73,6 +73,9 @@ pub(super) fn sync(
                 if let Some(key) = native {
                     return serde_json::to_vec(&Look::Native(key)).map_err(|e| e.to_string());
                 }
+                if cfg!(target_os = "horizon") {
+                    return serde_json::to_vec(&Look::Stock).map_err(|e| e.to_string());
+                }
                 if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize >= MAX_BLOB {
                     return Err("Imported character exceeds the 64 MiB online limit".into());
                 }
@@ -136,6 +139,9 @@ pub(super) fn sync(
                     .ok_or("Cached appearance missing".into());
             }
             if bytes.first() == Some(&0) {
+                if cfg!(target_os = "horizon") {
+                    return Err("Imported characters are not loaded on the Switch".into());
+                }
                 validate_glb(&bytes[1..])?;
                 let name = format!("{}.glb", blake3::Hash::from_bytes(hash).to_hex());
                 std::fs::create_dir_all(cache_directory()).map_err(|e| e.to_string())?;

@@ -8,6 +8,8 @@
 //! - `sdmc:/switch/skate3rust/log.txt`: stdout, stderr and the tracing log, rewritten each launch
 //! - `sdmc:/switch/skate3rust/cache/`: each map's world texture pages as built at its first
 //!   launch, read at the next instead of built again (page_cache.rs); safe to delete
+//! - `sdmc:/switch/skate3rust/settings/player.json`: the multiplayer name, `{"name": "…"}`;
+//!   made as `Switch-XXXX` at the first start when it is missing
 //! - `sdmc:/switch/skate3rust/options.txt`: optional, one option per line:
 //!   - `log=<filter>`: the tracing filter (`RUST_LOG` on a PC)
 //!   - `no_pipelined_rendering`: render on the main thread instead of Bevy's render thread
@@ -42,11 +44,13 @@
 //!     `SKATE_WORLD_ORDER=centroid` (the world's old triangle order), both for comparing,
 //!     map_transition.rs's `SKATE_MAP_CHANGE=<map name>@<seconds>` (request a map change that
 //!     many seconds after the first frame, once, for measuring a map change's memory),
+//!     multiplayer/lan.rs's `SKATE_LAN=host|find|join` and `SKATE_LAN_LEAVE_AFTER=<seconds>`
+//!     (host or find a LAN game by itself, for the emulator half of a LAN test; findings 65),
 //!     page_cache.rs's `SKATE_PAGE_CACHE=0` (build the texture pages at every launch) and
 //!     `SKATE_PAGE_CACHE_VERIFY=1` (build them anyway and compare them with the cached copy),
-//!     game_audio's `SKATE_AUDIO_EARLY_LOAD=0` (load the start-up sounds in the first frame,
-//!     not while the scene is built; native/startup.rs), Mesa's `NAK_DEBUG` and
-//!     `NVK_SWITCH_DEAD_COLOR` (bevy_horizon's docs/toolchain.md), or bevy_horizon's
+//!     game_audio's `SKATE_AUDIO_EARLY_LOAD=0` (skip preloading startup banks while the scene
+//!     builds; the runtime worker loads them with the rest when audio starts; native/startup.rs),
+//!     Mesa's `NAK_DEBUG` and `NVK_SWITCH_DEAD_COLOR` (bevy-horizon's docs/toolchain.md), or
 //!     `BH_THREAD_CORES` (the cores new threads may run
 //!     on; its docs/platform-notes.md), `BEVY_HORIZON_CPU_PROFILE` (its profiler.rs),
 //!     `BH_ROBUST_BUFFER_ACCESS=0` (its patched wgpu-hal: drops the bounds check NVK otherwise

@@ -230,9 +230,9 @@ pub(crate) fn player_attached(mods: &Mods) -> bool {
 }
 
 /// Whether a mod can read the player's physics this tick: `snapshot_ro`, the only reader of
-/// `SkaterRuntime::mod_contact_frame`, runs only while the runtime is busy.
+/// `SkaterRuntime::mod_contact_frame`, runs only while mod work is pending.
 pub(crate) fn reads_player_physics(mods: &Mods) -> bool {
-    mods.runtime_busy()
+    mods.mod_work_pending()
 }
 
 impl Mods {
@@ -242,7 +242,11 @@ impl Mods {
         self.manager.packages.values().any(|p| p.running()) || !self.bodies.is_empty() || !self.joints.is_empty()
     }
 
-    fn runtime_busy(&self) -> bool {
+    /// Whether any mod has work the snapshot serves. The game's own mirrors of other players
+    /// (`skater_proxies`, from `bridge::push_skater_into_rapier`) don't count. A busy check that
+    /// counted them built the mod snapshot on every physics tick with one remote player present,
+    /// about 40 % of the Switch's main thread in a profiled run, though no mod reads it.
+    fn mod_work_pending(&self) -> bool {
         self.manager.packages.values().any(|p| p.running())
             || !self.manager.commands.is_empty()
             || !self.manager.retired.is_empty()
@@ -252,7 +256,6 @@ impl Mods {
             || !self.joints.is_empty()
             || self.attach.is_some()
             || !self.canvases.is_empty()
-            || !self.skater_proxies.is_empty()
             || !self.volumes.is_empty()
     }
 }
@@ -423,7 +426,7 @@ fn maintenance(world: &mut World, mut scanned_once: Local<bool>) {
             clear_runtime(world, &mut mods);
             mods.generation = generation;
             mods.manager.commands.clear();
-            if mods.runtime_busy() {
+            if mods.mod_work_pending() {
                 let camera = camera_position(world);
                 let snap = snapshot_ro(world, &mut mods, camera);
                 mods.manager.snapshot = std::sync::Arc::new(snap);
@@ -441,7 +444,7 @@ fn maintenance(world: &mut World, mut scanned_once: Local<bool>) {
         }
         audio_reloads(world, &mut mods);
         sync_audio_content(world, &mods);
-        if !mods.runtime_busy() {
+        if !mods.mod_work_pending() {
             return;
         }
         // The last update already published observations. Maintenance only scans
@@ -601,7 +604,7 @@ fn fixed(world: &mut World) {
     let dt = world.resource::<Time<Fixed>>().delta_secs_f64();
     world.resource_scope(|world, mut mods: Mut<Mods>| {
         bridge::take_reactions(&mut mods, &mut world.resource_mut::<crate::physics::GamePhysics>());
-        if mods.runtime_busy()
+        if mods.mod_work_pending()
             || mods.manager.packages.values().any(|package| package.running())
         {
             let camera = camera_position(world);
@@ -750,7 +753,7 @@ fn fixed(world: &mut World) {
 fn update(world: &mut World) {
     let _span = bevy::log::tracing::info_span!("mods.update").entered();
     world.resource_scope(|world, mut mods: Mut<Mods>| {
-        if !mods.runtime_busy() {
+        if !mods.mod_work_pending() {
             return;
         }
         let camera = camera_position(world);
