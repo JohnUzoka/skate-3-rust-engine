@@ -67,6 +67,18 @@ Controls are the PC version's controller layout. **(+)** opens the menu (graphic
 difficulty, maps, character); **(B)** goes back. **Quit game** returns to the
 Homebrew Menu. Changed settings are saved in `switch/skate3rust/settings/`.
 
+## LAN multiplayer
+
+Both players must be connected to the same Wi-Fi, run the same game build, and have the same map loaded. No address or code is needed:
+
+1. Open the pause menu with **(+)**, choose **MULTIPLAYER**, then **Host LAN game**.
+2. On the other Switch, choose **Find LAN games** and select the host's name in the list.
+3. Close the menu on both consoles to skate together. Use **Leave multiplayer** before looking for another game.
+
+A session holds three players, the host included. Any other player is refused with "Lobby full". The list shows how many players each game holds, such as 2/3.
+
+The player name comes from `switch/skate3rust/settings/player.json`. The export script copies it from the PC; if the file is missing, the Switch creates a name such as `Switch-1A2B` on first launch. Imported characters appear as the stock skater on the Switch.
+
 ## Options
 
 The Switch build turns on the rendering options that ran best on the console. To
@@ -102,8 +114,12 @@ beside it. Include both when reporting a problem.
   skater: each of its ten parts poses its own skeleton.
 - Road lines in the distance can shimmer slightly.
 - Docked play hasn't been tested.
-- Updates and Steam multiplayer are PC-only. Local multiplayer and mods haven't
-  been tested on the Switch, and the export script doesn't copy mods.
+- Updates and Steam multiplayer are PC-only. Mods haven't been tested on the Switch, and
+  the export script doesn't copy mods.
+- LAN multiplayer is new in 0.1.4. Tested: one Switch hosting, with up to two PC players,
+  and a Switch joining a PC host. Not tested on hardware: two Switches playing together,
+  the refusal of a fourth player ("Lobby full"), and the 10-second timeout when a host goes
+  silent. The discovery code changed after the last Switch test, so only the PC has run it.
 
 ## Building
 
