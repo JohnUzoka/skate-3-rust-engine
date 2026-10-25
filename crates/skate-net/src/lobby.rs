@@ -3,6 +3,10 @@
 use crate::packed::{self, BODY, HEADER, POSE, Packed, Reader};
 use std::collections::{BTreeMap, VecDeque};
 pub const MAX_PLAYERS: usize = 10;
+/// Player limit for LAN games. Steam and direct-IP games keep `MAX_PLAYERS`.
+pub const LAN_PLAYERS: usize = 3;
+/// A guest that hears nothing from its host for this long treats the host as lost.
+const HOST_SILENT_AFTER: u64 = 10_000;
 pub const HELLO: u8 = 3;
 pub const ROSTER: u8 = 4;
 pub const ACK: u8 = 5;
@@ -157,9 +161,16 @@ pub struct Session {
     pub actors: BTreeMap<u64, Actor>,
     pub stats: Stats,
     pub notice: String,
+    /// Set when the host sent GOODBYE; Direct sessions have no migration authority.
+    host_left: bool,
+    /// Set when this guest stopped hearing from its host for `HOST_SILENT_AFTER` ms.
+    host_silent: bool,
+    /// Players allowed in the lobby, host included.
+    capacity: usize,
     host: Option<u64>,
-    links: BTreeMap<u64, Link>,
     pending: Vec<Outgoing>,
+    /// Active transport peers (UDP endpoint to remote actor and reliability state).
+    links: BTreeMap<u64, Link>,
     last_hello: u64,
     last_roster: u64,
     roster_seq: u32,
@@ -188,6 +199,9 @@ impl Session {
             links,
             stats: Stats::default(),
             notice: String::new(),
+            host_left: false,
+            host_silent: false,
+            capacity: MAX_PLAYERS,
             pending: vec![],
             last_hello: 0,
             last_roster: 0,
@@ -209,6 +223,8 @@ impl Session {
     /// An external membership authority chooses the new endpoint. Preserve our
     /// actor/capture history; rebuild membership and recipient delta baselines.
     pub fn migrate(&mut self, host: Option<u64>, now: u64) {
+        self.host_left = false;
+        self.host_silent = false;
         self.host = host;
         self.links.clear();
         if let Some(peer) = host {
@@ -256,6 +272,23 @@ impl Session {
     }
     pub fn connected(&self) -> bool {
         self.is_host() || self.received_roster != 0
+    }
+    /// The host said GOODBYE, or went silent (see `host_silent`). Direct sessions have no host migration, so the game leaves.
+    pub fn host_left(&self) -> bool {
+        self.host_left
+    }
+
+    /// True when the host went silent for `HOST_SILENT_AFTER` ms (not GOODBYE).
+    pub fn host_silent(&self) -> bool {
+        self.host_silent
+    }
+    /// Sets the player limit, host included. Clamped to `1..=MAX_PLAYERS`.
+    pub fn set_capacity(&mut self, players: usize) {
+        self.capacity = players.clamp(1, MAX_PLAYERS);
+    }
+    /// The player limit, host included.
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
     pub fn set_congested(&mut self, congested: bool) {
         let base = if self.loopback { LOOPBACK_LINK_BUDGET } else { DEFAULT_LINK_BUDGET };
@@ -310,6 +343,12 @@ impl Session {
         if session != self.session || actor == 0 {
             return;
         }
+        if self.host == Some(peer) {
+            // Any valid packet from the host proves it is alive.
+            if let Some(link) = self.links.get_mut(&peer) {
+                link.seen = now;
+            }
+        }
         let mut r = Reader(&data[HEADER..]);
         if kind == HELLO && self.is_host() {
             let Some(info) = read_info(&mut r) else {
@@ -319,7 +358,7 @@ impl Session {
                 return;
             }
             // Map, rig and physics fingerprints describe peers; they do not gate admission.
-            let error = if !self.links.contains_key(&peer) && self.links.len() >= MAX_PLAYERS - 1 {
+            let error = if !self.links.contains_key(&peer) && self.links.len() >= self.capacity - 1 {
                 3
             } else {
                 0
@@ -399,7 +438,7 @@ impl Session {
             self.notice = match r.byte() {
                 Some(1) => "Map mismatch",
                 Some(2) => "Physics definition mismatch",
-                Some(3) => "Lobby full (10 players)",
+                Some(3) => "Lobby full",
                 _ => "Lobby rejected connection",
             }
             .into();
@@ -455,6 +494,7 @@ impl Session {
             } else {
                 self.actors.retain(|id, _| *id == self.local);
                 self.received_roster = 0;
+                self.host_left = true;
                 self.notice = "Host left. Join another lobby.".into();
             }
             return;
@@ -556,6 +596,14 @@ impl Session {
             l.credits = (l.credits + dt * self.link_budget).min(link_cap);
             l.app_credits = (l.app_credits + dt * APP_BUDGET).min(APP_CREDIT_CAP);
         }
+        if let Some(peer) = self.host {
+            if let Some(link) = self.links.get_mut(&peer) {
+                // Silence is measured from the first service tick, not from clock zero.
+                if link.seen == 0 {
+                    link.seen = now.max(1);
+                }
+            }
+        }
         if self.is_host() {
             let expired: Vec<_> = self
                 .links
@@ -568,6 +616,18 @@ impl Session {
                 self.actors.remove(&id);
                 self.last_roster = 0;
             }
+        } else if self
+            .links
+            .values()
+            .any(|l| now.saturating_sub(l.seen) > HOST_SILENT_AFTER)
+        {
+            if !self.host_left {
+                self.notice = "Lost host: no answer for 10 seconds".into();
+                self.host_silent = true;
+            }
+            self.host_left = true;
+            self.actors.retain(|id, _| *id == self.local);
+            self.received_roster = 0;
         } else if self
             .links
             .values()

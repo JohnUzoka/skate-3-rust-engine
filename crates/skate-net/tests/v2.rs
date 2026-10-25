@@ -1,6 +1,6 @@
 use skate_net::{
     Body, Bone, Pose,
-    lobby::{Info, Session},
+    lobby::{Info, Session, LAN_PLAYERS},
     packed::{self, BodyState, Packed, PoseState},
 };
 fn pose(p: [f32; 3], t: f32) -> Pose {
@@ -283,4 +283,43 @@ fn discovery_accepts_other_game_versions_but_not_unrelated_spacewar_lobbies() {
     assert!(skate_net::directory::is_game_lobby("skate3rust-free-skate-v4"));
     assert!(skate_net::directory::is_game_lobby("skate3rust-free-skate-v5"));
     assert!(!skate_net::directory::is_game_lobby("another-game"));
+}
+#[test]
+fn lan_lobby_admits_two_guests_and_refuses_the_third() {
+    let mut host = Session::new(1, info(1), None);
+    host.set_capacity(LAN_PLAYERS);
+    for id in 2..=3 {
+        let mut guest = Session::new(1, info(id), Some(1));
+        exchange(&mut host, &mut guest, id, id * 100);
+        assert!(guest.connected());
+    }
+    assert_eq!(host.actors.len(), 3);
+    let mut extra = Session::new(1, info(4), Some(1));
+    exchange(&mut host, &mut extra, 4, 400);
+    assert_eq!(extra.notice, "Lobby full");
+    assert!(!extra.connected());
+    assert_eq!(host.actors.len(), 3);
+}
+#[test]
+fn guest_loses_a_host_that_stays_silent_for_ten_seconds() {
+    let mut host = Session::new(1, info(1), None);
+    let mut guest = Session::new(1, info(2), Some(1));
+    // The host answers every second, so it is never lost.
+    for second in 0..=30u64 {
+        exchange(&mut host, &mut guest, 2, second * 1000);
+        assert!(!guest.host_left(), "host heard at {} ms", second * 1000);
+    }
+    // A guest that has never heard its host is timed from its first service tick.
+    let mut fresh = Session::new(1, info(3), Some(1));
+    fresh.service(60_000);
+    assert!(!fresh.host_left());
+    fresh.service(70_001);
+    assert!(fresh.host_left());
+    // The last packet from the host arrived at 30_000 ms.
+    guest.service(40_000);
+    assert!(!guest.host_left());
+    guest.service(40_001);
+    assert!(guest.host_left());
+    assert!(guest.host_silent());
+    assert_eq!(guest.notice, "Lost host: no answer for 10 seconds");
 }

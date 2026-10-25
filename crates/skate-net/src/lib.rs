@@ -5,6 +5,7 @@ mod codec;
 pub mod lobby;
 pub mod blob;
 pub mod socket;
+pub mod lan;
 pub mod directory;
 pub mod packed;
 pub mod interpolation;

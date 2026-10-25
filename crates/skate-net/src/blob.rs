@@ -57,6 +57,16 @@ mod tests {
         assert_eq!(b.ready(11).unwrap().1, &[5, 6]);
     }
     #[test]
+    fn receive_limit_rejects_large_blobs_and_accepts_small_ones() {
+        let mut blobs = Blobs::default();
+        blobs.limit_receive(64 * 1024);
+        blobs.receive(1, 10, META, 1, &manifest(&vec![0; 64 * 1024 + 1]));
+        assert!(blobs.cache.is_empty());
+        blobs.receive(1, 10, META, 1, &manifest(&vec![1; 1024]));
+        assert_eq!(blobs.cache.len(), 1);
+        assert_eq!(blobs.actors.get(&10).unwrap().0, 1);
+    }
+    #[test]
     fn lobby_rejects_forged_blob_origins_and_unregistered_senders() {
         use crate::lobby::{Info, Session};
         let info = |id| Info {
@@ -132,8 +142,14 @@ pub struct Blobs {
     sending: BTreeMap<(u64, u64), Sending>,
     acknowledgements: BTreeSet<(u64, u64)>,
     round: usize,
+    receive_limit: Option<usize>,
 }
 impl Blobs {
+    /// The largest blob this peer accepts from others. The Switch takes outfits and retail
+    /// looks only, never a 64 MiB character.
+    pub fn limit_receive(&mut self, bytes: usize) {
+        self.receive_limit = Some(bytes);
+    }
     fn reserve(&mut self, size: usize) -> bool {
         let mut used: usize = self.cache.values().map(|b| b.id.size).sum();
         let unused: Vec<_> = self
@@ -211,7 +227,10 @@ impl Blobs {
             }
             let hash: [u8; 32] = data[..32].try_into().unwrap();
             let size = u32::from_le_bytes(data[32..].try_into().unwrap()) as usize;
-            if size == 0 || size > MAX_BLOB {
+            if size == 0
+                || size > MAX_BLOB
+                || self.receive_limit.is_some_and(|limit| size > limit)
+            {
                 return;
             }
             if self
