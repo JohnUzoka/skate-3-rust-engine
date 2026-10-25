@@ -7,7 +7,8 @@
 //!   commands, so a failed mod's overlay goes at once). Changes are coalesced into one restart.
 //! - The native runtime starts after the first mod scan ([`frame`], the first system of the audio
 //!   pass), so an audio mod enabled at boot costs no second start. Without overlays the startup
-//!   [`Library`] is used as it is: no merge, no rebuild.
+//!   [`Library`] is used as it is: no merge, no rebuild. Its runtime is built on a worker; content
+//!   remains `Starting` until that worker is finished, then the game thread installs the stream.
 //! - A restart rebuilds the [`Library`] (install + overlays in mod-id order: the first owner of an
 //!   identity wins), takes the runtime and its stream down and starts a new one that continues
 //!   the old one's post ids with `map_epoch` + 1, and replaces the world / NPC / speech hosts with
@@ -36,6 +37,8 @@ enum Runtime {
     /// Waiting for the first mod scan.
     #[default]
     NotStarted,
+    /// The first runtime is being assembled by `native::BackgroundStart` off the game thread.
+    Starting,
     Started,
     /// The start failed (no AEMS data): retried only when the content changes.
     Failed,
@@ -58,6 +61,8 @@ pub(crate) struct AudioContent {
     pub(crate) report: ContentReport,
     /// The mod manager scanned at least once (set by the mod system).
     pub(crate) scanned: bool,
+    /// The optional merge report for the asynchronous first start.
+    starting_report: Option<ContentReport>,
     runtime: Runtime,
     /// Restarts done.
     pub(crate) restarts: u64,
@@ -228,6 +233,19 @@ fn reset_hosts(world: &mut World) {
     world.insert_resource(super::world_speech::WorldSpeech::default());
 }
 
+fn finish_first_start(world: &mut World, report: Option<ContentReport>, started: bool, clear_pending: bool) {
+    let mut content = world.resource_mut::<AudioContent>();
+    if let Some(report) = report {
+        content.report = report;
+        content.generation += 1;
+        content.world_generation += 1;
+    }
+    if clear_pending {
+        content.pending = false;
+    }
+    content.runtime = if started { Runtime::Started } else { Runtime::Failed };
+}
+
 /// The first system of the audio pass: the native runtime's first start (after the first mod
 /// scan, or at once without the mod system, and once the start-up banks' thread is done) and the
 /// restart after an overlay change.
@@ -247,23 +265,54 @@ pub(super) fn frame(world: &mut World) {
             if mods && !scanned {
                 return;
             }
-            // Started once the start-up banks are in, so no frame waits for their thread.
+            // Startup banks were read while the scene built. Don't start the native runtime until
+            // they are ready; the runtime assembly itself runs in the background too.
             if world.get_resource::<super::native::startup::EarlyLoads>().is_some_and(|early| !early.finished()) {
                 return;
             }
-            // Overlays found by the first scan are merged before the first start; without any the
-            // startup library is used untouched.
+            // Overlays from the first mod scan belong in the first runtime. The snapshot below
+            // shares the immutable manifest and paths; audio::Library stays available to systems
+            // while the worker parses projects and loads banks.
             let report = if overlays { rebuild(world) } else { None };
-            let started = super::native::launch(world, None);
-            super::seed::from_env(world);
-            let mut content = world.resource_mut::<AudioContent>();
-            if let Some(report) = report {
-                content.report = report;
-                content.generation += 1;
-                content.world_generation += 1;
+            let Some(settings) = world.get_resource::<super::AudioSettings>() else {
+                let started = super::native::launch(world, None);
+                super::seed::from_env(world);
+                finish_first_start(world, report, started, true);
+                return;
+            };
+            let instances = if settings.more_audible_world() { super::native::WorldInstances::MORE_AUDIBLE } else { super::native::WorldInstances::RETAIL };
+            let library = world.resource::<Library>().startup_view();
+            let early = world.remove_resource::<super::native::startup::EarlyLoads>()
+                .map(super::native::startup::EarlyLoads::join).unwrap_or_default();
+            match super::native::start_background(library, instances, early) {
+                Ok(start) => {
+                    world.insert_resource(start);
+                    let mut content = world.resource_mut::<AudioContent>();
+                    content.starting_report = report;
+                    content.pending = false;
+                    content.runtime = Runtime::Starting;
+                    return;
+                }
+                Err((error, early)) => {
+                    warn!("Game audio: no runtime startup thread ({error}); starting on the game thread");
+                    let started = super::native::launch_with_early(world, None, early);
+                    super::seed::from_env(world);
+                    finish_first_start(world, report, started, true);
+                }
             }
-            content.pending = false;
-            content.runtime = if started { Runtime::Started } else { Runtime::Failed };
+        }
+        Runtime::Starting => {
+            let Some(start) = world.get_resource::<super::native::BackgroundStart>() else {
+                panic!("audio runtime is Starting without its worker");
+            };
+            if !start.finished() {
+                return;
+            }
+            let start = world.remove_resource::<super::native::BackgroundStart>().unwrap();
+            let started = super::native::finish_background(world, start);
+            super::seed::from_env(world);
+            let report = world.resource_mut::<AudioContent>().starting_report.take();
+            finish_first_start(world, report, started, false);
         }
         Runtime::Started if pending => swap_or_restart(world),
         Runtime::Failed if pending => restart(world),
@@ -420,6 +469,43 @@ mod tests {
         }
     }
 
+    fn wait_for_first_start(world: &mut World) {
+        if world.resource::<AudioContent>().runtime == Runtime::NotStarted {
+            frame(world);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while world.resource::<AudioContent>().runtime == Runtime::Starting {
+            frame(world);
+            assert!(std::time::Instant::now() < deadline, "native audio startup worker did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn first_runtime_start_is_pending_then_reports_missing_projects() {
+        let (root, _) = super::super::library::tests::content_fixture("async-first-start");
+        let mut world = World::new();
+        let config = config(&root);
+        world.insert_resource(super::super::AudioSettings::load(&config));
+        world.insert_resource(config);
+        world.insert_resource(Library::load(&root).unwrap());
+        world.init_resource::<Assets<super::super::native::NativeStream>>();
+        world.init_resource::<AudioContent>();
+        world.init_resource::<super::super::mod_audio::AudioApi>();
+        reset_hosts(&mut world);
+        world.resource_mut::<AudioContent>().scanned = true;
+
+        frame(&mut world);
+        assert_eq!(world.resource::<AudioContent>().runtime, Runtime::Starting);
+        assert!(!world.contains_resource::<super::super::native::Native>());
+        assert!(world.contains_resource::<super::super::native::BackgroundStart>());
+
+        wait_for_first_start(&mut world);
+        assert_eq!(world.resource::<AudioContent>().runtime, Runtime::Failed);
+        assert!(!world.contains_resource::<super::super::native::BackgroundStart>());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// A world with what [`frame`] / [`restart`] use, the install's library and the runtime
     /// started as the game starts it.
     fn game_world(root: &Path) -> World {
@@ -433,7 +519,7 @@ mod tests {
         world.init_resource::<super::super::mod_audio::AudioApi>();
         reset_hosts(&mut world);
         world.resource_mut::<AudioContent>().scanned = true;
-        frame(&mut world);
+        wait_for_first_start(&mut world);
         assert!(world.contains_resource::<super::super::native::Native>(), "the runtime starts at the first pass after the scan");
         world
     }
@@ -501,7 +587,7 @@ mod tests {
             c.scanned = true;
             c.sync([("dev.resident", dir.as_path(), 1)].into_iter());
         }
-        frame(&mut world);
+        wait_for_first_start(&mut world);
         let c = world.resource::<AudioContent>();
         assert_eq!((c.restarts, c.generation), (0, 1), "merged before the first start");
         assert_eq!(c.report.applied, ["dev.resident"]);

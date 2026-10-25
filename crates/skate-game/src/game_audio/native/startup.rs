@@ -2,19 +2,21 @@
 //! scene builds. `Native::start_from` used to read them on the game thread in frame 0: about
 //! 2,750 WAVs (85 MB), 10.8 s on a Switch, after the 19 s scene build.
 //!
-//! - Audio `setup` (Startup, before `world::spawn`) starts the thread with the startup library's
-//!   sources ([`begin`]).
-//! - The thread runs the loads the game thread would run ([`BankSource::load`],
-//!   [`SpliceSource::load`], [`wheels_load`]) and keeps the ones that loaded, each with its source.
-//! - The first start waits for it to finish (`content::frame` checks [`EarlyLoads::finished`]
-//!   each frame) and `native::launch` then joins it: no frame waits for the loads. On a Switch
-//!   whose start map loads in the background they take about 30 s, and joining mid-load held the
-//!   first frame for 24 s. `start_from` takes a result only when its source is the one the
-//!   current library names: mod overlays merged before the first start change a bank's source,
-//!   and that bank loads as before.
-//! - Only the data moves: `Runtime::load_bank`, the Splice installs and the streams run where and
-//!   in the order they did, so the runtime sees exactly what it saw before.
-//! - `SKATE_AUDIO_EARLY_LOAD=0` turns it off.
+//! - Audio `setup` (Startup, before `world::spawn`) starts the bank loader with the startup
+//!   library's sources ([`begin`]).
+//! - The loader runs the bank, Splice and wheel reads the game thread used to do and keeps the
+//!   results with their source.
+//! - After the first mod scan and once these loads are finished, `content::frame` starts the
+//!   native runtime on `audio-runtime-start`; it keeps running frames while the Csis projects are
+//!   parsed and installed and startup banks are posted. `BackgroundStart` is joined only after
+//!   `is_finished`, then the stream and `Native` resource are installed on the game thread. No
+//!   frame waits for runtime setup; native sounds start when that worker completes.
+//! - The worker uses a cheap immutable `Library::startup_view`. If a tuning write races it, the
+//!   live library's manifest is copy-on-write and the worker keeps its startup version.
+//! - Bank/source matching stays exact, so mod overlays merged before the first start still cause
+//!   a bank from another source to load as before.
+//! - `SKATE_AUDIO_EARLY_LOAD=0` turns the WAV bank loader off (it doesn't disable background
+//!   runtime assembly).
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -47,11 +49,11 @@ pub(crate) struct Loaded {
     stale: usize,
 }
 
-/// Start the thread for the startup library. None (everything loads in frame 0, as before): turned
-/// off, an install the runtime can't start on, or no thread.
+/// Start the separate bank-preload thread. None means no preload (disabled, no projects, or a
+/// thread creation failure); the runtime-start worker still performs its loads off the game thread.
 pub(crate) fn begin(library: &Library) -> Option<EarlyLoads> {
     if std::env::var_os("SKATE_AUDIO_EARLY_LOAD").is_some_and(|v| v == "0") {
-        info!("AUDIO_EARLY_LOAD off (SKATE_AUDIO_EARLY_LOAD=0): the start-up banks load in frame 0");
+        info!("AUDIO_EARLY_LOAD off (SKATE_AUDIO_EARLY_LOAD=0): the runtime worker will load startup banks");
         return None;
     }
     let files = library.aems();
@@ -87,7 +89,7 @@ pub(crate) fn begin(library: &Library) -> Option<EarlyLoads> {
     match std::thread::Builder::new().name("audio-early-load".into()).spawn(move || load(banks, splice, wheels, started)) {
         Ok(thread) => Some(EarlyLoads { thread, started }),
         Err(e) => {
-            warn!("AUDIO_EARLY_LOAD no thread ({e}): the start-up banks load in frame 0");
+            warn!("AUDIO_EARLY_LOAD no thread ({e}): the runtime worker will load startup banks");
             None
         }
     }

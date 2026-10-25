@@ -7,6 +7,9 @@
 //! - At startup every Csis project is installed and `emitter_utility.abk` is loaded and posted
 //!   (retail posts `c_emitter_utility` once at boot; it feeds the `*_snd` / `random_*_gbl` globals).
 //! - Banks are loaded on first use, with their decoded WAVs as PCM, and unloaded on map change.
+//! - The first runtime's projects and banks are parsed, installed and posted on `audio-runtime-start`
+//!   after the separate early-bank loader finishes; the game thread installs the completed stream.
+//!   Audio mods that require a runtime restart still use the synchronous restart path.
 //! - One device-paced stream: rodio pulls 48 kHz stereo; each 256-frame block renders the voices
 //!   and ticks the evaluator, so programs run on the audio clock exactly like retail. Game code
 //!   posts, redelivers and releases between blocks under the runtime's lock.
@@ -24,7 +27,8 @@
 //! crossfades still use interim Bevy playback; the zone fades and gains use native MixMap controls.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use bevy::audio::{AddAudioSource, AudioPlayer, Decodable, PlaybackSettings, Source, Volume};
 use bevy::prelude::*;
@@ -220,6 +224,31 @@ pub(crate) struct Native {
     /// The first start's banks, read while the scene built ([`startup`]); empty after the start.
     early: startup::Loaded,
 }
+
+/// The first AEMS runtime's CPU and file work, off the game thread. The worker only sees a
+/// `Library::startup_view`; the live Library remains in the World for other systems.
+#[derive(Resource)]
+pub(super) struct BackgroundStart {
+    thread: JoinHandle<Result<Native, String>>,
+    started: Instant,
+    projects: usize,
+}
+
+impl BackgroundStart {
+    pub(super) fn finished(&self) -> bool {
+        self.thread.is_finished()
+    }
+
+    fn join(self) -> (Result<Native, String>, usize, Duration) {
+        let elapsed = self.started.elapsed();
+        let result: Result<Native, String> = match self.thread.join() {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
+        (result, self.projects, elapsed)
+    }
+}
+
 
 /// A pass [`mixmap_frame`] began and [`mixmap_tick`] finishes.
 #[derive(Clone, Copy, Debug)]
@@ -940,26 +969,68 @@ pub(super) struct Carry {
     pub world: WorldInstances,
 }
 
-/// Start the runtime and its output stream from the current [`Library`] (`content::frame`: the
-/// first start, and every restart with the old runtime's [`Carry`]). False when it could not
-/// start (the error is logged; those sounds stay silent).
+/// Start the runtime and its output stream synchronously (restarts, and the thread-creation
+/// fallback). The first start uses [`start_background`] while its worker is alive.
 pub(super) fn launch(world: &mut World, carry: Option<Carry>) -> bool {
-    static DSP: std::sync::Once = std::sync::Once::new();
-    // The banks the start-up thread read during the scene build (the first start; joined and taken
-    // whatever happens next, so its memory never outlives this call unused).
     let early = world.remove_resource::<startup::EarlyLoads>().map(startup::EarlyLoads::join).unwrap_or_default();
+    launch_with_early(world, carry, early)
+}
+
+/// Synchronous fallback when the worker thread can't be created. `early` has already been joined.
+pub(super) fn launch_with_early(world: &mut World, carry: Option<Carry>, early: startup::Loaded) -> bool {
     let Some(settings) = world.get_resource::<super::AudioSettings>() else { return false };
     let instances = carry.map_or_else(|| if settings.more_audible_world() { WorldInstances::MORE_AUDIBLE } else { WorldInstances::RETAIL }, |c| c.world);
     let Some(library) = world.get_resource::<Library>() else { return false };
-    // Which compiled copy of the DSP loops runs (hardware FMA or plain; same output bits): chosen
-    // once, before the first render (doc 11 "Hardware FMA dispatch").
+    init_dsp();
+    let started = Instant::now();
+    let projects = library.aems().projects.len();
+    let result = Native::start_early(library, instances, carry.map_or(1, |c| c.first_node), early);
+    install(world, result, projects, started.elapsed(), carry.map(|c| c.epoch), false)
+}
+
+/// Start initial audio off-thread; returns the already-loaded data if spawning fails, so the caller
+/// can retain the old synchronous fallback without losing or decoding the banks twice.
+pub(super) fn start_background(
+    library: Library,
+    instances: WorldInstances,
+    early: startup::Loaded,
+) -> Result<BackgroundStart, (std::io::Error, startup::Loaded)> {
+    let projects = library.aems().projects.len();
+    let started = Instant::now();
+    let early = Arc::new(Mutex::new(Some(early)));
+    let worker_early = Arc::clone(&early);
+    let thread = thread::Builder::new().name("audio-runtime-start".into()).spawn(move || {
+        let early = worker_early.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default();
+        init_dsp();
+        Native::start_early(&library, instances, 1, early)
+    });
+    match thread {
+        Ok(thread) => Ok(BackgroundStart { thread, started, projects }),
+        Err(error) => Err((error, early.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_default())),
+    }
+}
+
+/// Poll-completion path for the first start. A panic retains the previous panic behavior.
+pub(super) fn finish_background(world: &mut World, start: BackgroundStart) -> bool {
+    let (result, projects, elapsed) = start.join();
+    install(world, result, projects, elapsed, None, true)
+}
+
+fn init_dsp() {
+    static DSP: std::sync::Once = std::sync::Once::new();
+    // The hardware-FMA dispatch changes only which compiled copy runs; both produce the same bits.
     DSP.call_once(|| info!("AUDIO_DSP {}", skate_audio::dsp::init_fma()));
-    let (started, projects) = (Native::start_early(library, instances, carry.map_or(1, |c| c.first_node), early), library.aems().projects.len());
+}
+
+fn install(world: &mut World, started: Result<Native, String>, projects: usize, elapsed: Duration, epoch: Option<u64>, background: bool) -> bool {
     match started {
         Ok(mut native) => {
             info!("Game audio: native AEMS runtime on ({projects} projects)");
-            if let Some(c) = carry {
-                native.map_epoch = c.epoch;
+            if background {
+                info!("AUDIO_RUNTIME_START background_ms={}", elapsed.as_millis());
+            }
+            if let Some(epoch) = epoch {
+                native.map_epoch = epoch;
             }
             let handle = world.resource_mut::<Assets<NativeStream>>().add(NativeStream { shared: native.shared.clone() });
             // ONCE, not LOOP: the stream never ends, and Bevy's LOOP wraps it in rodio's

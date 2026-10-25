@@ -14,7 +14,7 @@ use std::{
 /// until setup refreshes it.
 const MANIFEST_VERSIONS: std::ops::RangeInclusive<u32> = 3..=5;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Entry {
     pub file: String,
     // Manifests also carry `seconds` (the sample length): read only by the removed measured
@@ -53,7 +53,7 @@ pub(crate) struct EmitterRecord {
 
 /// The native AEMS runtime's inputs (audio_export.aems_files): Csis projects in install order and
 /// module banks by stem, as files under the audio folder.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct AemsFiles {
     #[serde(default)]
     pub projects: Vec<String>,
@@ -69,7 +69,7 @@ pub(crate) struct AemsFiles {
 
 /// A rolling grain member: the whole recording and its raw `.grain` member for the native grain
 /// player (the manifest's speed `bands`, the removed interim loop's, are ignored).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Grain {
     #[serde(default)]
     file: Option<String>,
@@ -78,7 +78,7 @@ struct Grain {
 }
 
 /// The vault's grain tuning (audio_export.grain_tuning): every float exactly as stored.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 pub(crate) struct GrainTuningJson {
     #[serde(default)]
     surfaces: BTreeMap<String, SurfaceJson>,
@@ -123,7 +123,7 @@ struct SurfaceJson {
     slope_up_divisor: Option<f32>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct OwnerJson {
     rocket_start_kmh: Option<f32>,
     rocket_top_kmh: Option<f32>,
@@ -297,7 +297,7 @@ pub(crate) struct Crossfade {
     pub level: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Manifest {
     version: u32,
     ambience: BTreeMap<String, Entry>,
@@ -369,7 +369,7 @@ struct ModBankJson {
     group: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct ModSpeechJson {
     /// Clip (without `.dat`) → take → file.
     #[serde(default)]
@@ -430,7 +430,7 @@ pub(crate) struct BoxJson {
 }
 
 /// `audio_export.frontend_sounds`: the Splice bank and every `fe` record by key (16 hex digits).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct FrontendJson {
     #[serde(default)]
     bank: String,
@@ -438,7 +438,7 @@ struct FrontendJson {
     sounds: BTreeMap<String, FeSoundJson>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct FeSoundJson {
     #[serde(default)]
     name: String,
@@ -456,7 +456,7 @@ struct FeSoundJson {
 
 
 /// One speech archive's export: the index JSON and the folder of decoded takes (None: not decoded).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct SpeechEntry {
     #[serde(default)]
     index: String,
@@ -464,7 +464,7 @@ struct SpeechEntry {
     audio: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct JitterJson {
     /// The collection key (16 hex digits; absent before the eEQChain bus export).
     #[serde(default)]
@@ -476,7 +476,7 @@ struct JitterJson {
     params: Vec<f32>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct SeamJson {
     gain_low: Option<f32>,
     gain_high: Option<f32>,
@@ -497,7 +497,7 @@ struct SeamJson {
 }
 
 /// The native buses' vault tuning (`audio_export.bus_tuning`; optional).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct BusTuningJson {
     /// Reverb preset key (16 hex digits) → its 44 record values by offset.
     #[serde(default)]
@@ -509,7 +509,7 @@ struct BusTuningJson {
     flange: Vec<Vec<f32>>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct EqBusJson {
     #[serde(default)]
     enabled: bool,
@@ -519,7 +519,7 @@ struct EqBusJson {
     ranges: Vec<[f32; 2]>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct GrindJson {
     v: Vec<f32>,
     f: Vec<f32>,
@@ -530,7 +530,7 @@ struct GrindJson {
     off: Option<GrindContactJson>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct GrindContactJson {
     ids: Vec<i32>,
     gain: Vec<f32>,
@@ -551,7 +551,7 @@ impl GrindContactJson {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct PlayerTuningJson {
     #[serde(default)]
     surface_table: Vec<Vec<i32>>,
@@ -580,7 +580,7 @@ struct PlayerTuningJson {
     grind_contact_eq: Option<u8>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct CollisionJson {
     #[serde(default)]
     materials: Vec<MaterialJson>,
@@ -588,7 +588,7 @@ struct CollisionJson {
     posters: BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 struct MaterialJson {
     #[serde(default = "no_kind")]
     kind: i32,
@@ -946,10 +946,12 @@ pub(crate) fn wheels_load(file: &Path) -> Option<Arc<skate_audio::mixer::Pcm>> {
 
 #[derive(Resource)]
 pub(crate) struct Library {
-    root: PathBuf,
-    manifest: Manifest,
+    // Runtime startup takes this immutable snapshot to a worker. Keeping the manifest and path
+    // tables in Arcs makes that a few reference-count increments, not a copy of the audio catalog.
+    root: Arc<PathBuf>,
+    manifest: Arc<Manifest>,
     /// The merged audio content overlays' roots by mod id (`mod:<id>/<path>` files).
-    mods: BTreeMap<String, PathBuf>,
+    mods: Arc<BTreeMap<String, PathBuf>>,
     loaded: HashMap<String, Clip>,
     failed: std::collections::HashSet<String>,
     /// The tuning sections as loaded (JSON, the overlays' merge included): the base of the runtime
@@ -959,7 +961,7 @@ pub(crate) struct Library {
     /// The loaded tuning sections a runtime tuning write replaced, kept to put back exactly.
     tuning_saved: TuningSaved,
     /// Mod files' stamps (size, modification time) taken at load (`stamp`).
-    stamps: HashMap<String, String>,
+    stamps: Arc<HashMap<String, String>>,
 }
 
 /// The tuning sections the runtime tuning writes replace (`Library::set_tuning`).
@@ -1204,17 +1206,17 @@ impl Library {
         match section {
             "player_tuning" => {
                 let new = serde_json::from_value::<PlayerTuningJson>(value.clone()).map_err(err)?;
-                let old = std::mem::replace(&mut self.manifest.player_tuning, new);
+                let old = std::mem::replace(&mut Arc::make_mut(&mut self.manifest).player_tuning, new);
                 self.tuning_saved.player.get_or_insert(old);
             }
             "world_tuning" => {
                 let new = serde_json::from_value::<super::world_sources::WorldTuningJson>(value.clone()).map_err(err)?;
-                let old = std::mem::replace(&mut self.manifest.world_tuning, new);
+                let old = std::mem::replace(&mut Arc::make_mut(&mut self.manifest).world_tuning, new);
                 self.tuning_saved.world.get_or_insert(old);
             }
             "bus_tuning" => {
                 let new = serde_json::from_value::<BusTuningJson>(value.clone()).map_err(err)?;
-                let old = std::mem::replace(&mut self.manifest.bus_tuning, new);
+                let old = std::mem::replace(&mut Arc::make_mut(&mut self.manifest).bus_tuning, new);
                 self.tuning_saved.bus.get_or_insert(old);
             }
             _ => return Err(format!("no tuning section {section}")),
@@ -1227,17 +1229,17 @@ impl Library {
         match section {
             "player_tuning" => {
                 if let Some(old) = self.tuning_saved.player.take() {
-                    self.manifest.player_tuning = old;
+                    Arc::make_mut(&mut self.manifest).player_tuning = old;
                 }
             }
             "world_tuning" => {
                 if let Some(old) = self.tuning_saved.world.take() {
-                    self.manifest.world_tuning = old;
+                    Arc::make_mut(&mut self.manifest).world_tuning = old;
                 }
             }
             "bus_tuning" => {
                 if let Some(old) = self.tuning_saved.bus.take() {
-                    self.manifest.bus_tuning = old;
+                    Arc::make_mut(&mut self.manifest).bus_tuning = old;
                 }
             }
             _ => {}
@@ -1300,6 +1302,21 @@ impl Library {
     /// Where a wheel-spin recording is (None: not in the install), for [`wheels_load`].
     pub(crate) fn wheels_source(&self, name: &str) -> Option<PathBuf> {
         Some(self.path(&self.manifest.wheels.get(name)?.file))
+    }
+
+    /// A read-only, cheap snapshot for the native startup worker. Runtime tuning writes use
+    /// `Arc::make_mut` if startup still holds the snapshot; the worker's manifest remains stable.
+    pub(crate) fn startup_view(&self) -> Self {
+        Self {
+            root: Arc::clone(&self.root),
+            manifest: Arc::clone(&self.manifest),
+            mods: Arc::clone(&self.mods),
+            loaded: HashMap::new(),
+            failed: Default::default(),
+            tuning_raw: std::sync::OnceLock::new(),
+            tuning_saved: TuningSaved::default(),
+            stamps: Arc::clone(&self.stamps),
+        }
     }
 
     /// The install's audio, no overlays.
@@ -1403,12 +1420,21 @@ impl Library {
         if !overlays.is_empty() {
             info!("Game audio: content overlays {:?} ({} conflicts, {} warnings, {} rejected)", report.applied, report.conflicts.len(), report.warnings.len(), report.rejected.len());
         }
-        let mut library = Self { root, manifest, mods, loaded: HashMap::new(), failed: Default::default(), tuning_raw: raw, tuning_saved: TuningSaved::default(), stamps: HashMap::new() };
+        let mut library = Self {
+            root: Arc::new(root),
+            manifest: Arc::new(manifest),
+            mods: Arc::new(mods),
+            loaded: HashMap::new(),
+            failed: Default::default(),
+            tuning_raw: raw,
+            tuning_saved: TuningSaved::default(),
+            stamps: Arc::new(HashMap::new()),
+        };
         // The mod files' stamps as loaded (the hot swap compares them: a file edited later is new
         // content of the next library, `stamp`).
         for f in mod_files {
             let s = library.file_stamp(&f);
-            library.stamps.insert(f, s);
+            Arc::make_mut(&mut library.stamps).insert(f, s);
         }
         Ok((library, report))
     }
@@ -1705,6 +1731,19 @@ pub(crate) mod tests {
         let mods = dir.join("mods/dev.a");
         std::fs::create_dir_all(mods.join("audio")).unwrap();
         (dir, mods)
+    }
+
+    #[test]
+    fn startup_view_shares_manifest_until_a_tuning_write() {
+        let (root, _) = tests::content_fixture("startup-view");
+        let mut library = Library::load(&root).unwrap();
+        let startup = library.startup_view();
+        assert!(Arc::ptr_eq(&library.manifest, &startup.manifest), "startup snapshot shares the parsed manifest");
+
+        library.set_tuning("player_tuning", &serde_json::json!({"wheel_bucket_high": 4.5})).unwrap();
+        assert_eq!(library.manifest.player_tuning.tuning().wheel_bucket_high, 4.5);
+        assert_eq!(startup.manifest.player_tuning.tuning().wheel_bucket_high, 3.0, "a startup worker keeps the configuration it started with");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn overlay(v: serde_json::Value) -> skate_mods::audio_content::AudioOverlay {
