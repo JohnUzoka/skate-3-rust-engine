@@ -114,8 +114,11 @@ pub(crate) struct Menu {
     browser: bool,
     network_page: u8,
     browser_count: usize,
+    lan_browser: bool,
     daylight: bool,
     section: usize,
+    /// True: the section list has focus, and up and down change the section. False: the item list has it.
+    section_focus: bool,
     custom_sections: Vec<(String, Vec<(String,String,String)>)>,
     map_detail: bool,
     destinations: Vec<crate::teleport_menu::Destination>,
@@ -178,13 +181,28 @@ impl Menu {
     fn rows(&self) -> Vec<usize> {
         if self.daylight { return (0..4).collect(); }
         if self.multiplayer {
-            return if self.browser { std::iter::once(0).chain(1..=self.browser_count.min(5)).chain([6,7,8,10]).collect() } else { match self.network_page {
-                1 => vec![3,4,10],
-                2 => vec![5,7,10],
-                3 => vec![0,1,10],
-                4 => (20..27).chain([10]).collect(),
-                _ => vec![2,6,13,14,15],
-            }};
+            return if self.browser {
+                // "Join with a code" is a Steam row: not in LAN mode, and not on the Switch.
+                let tail: &[usize] = if self.lan_browser || cfg!(target_os = "horizon") {
+                    &[6, 7, 10]
+                } else {
+                    &[6, 7, 8, 10]
+                };
+                std::iter::once(0)
+                    .chain(1..=self.browser_count.min(5))
+                    .chain(tail.iter().copied())
+                    .collect()
+            } else {
+                match self.network_page {
+                    1 => vec![3, 4, 10],
+                    2 => vec![5, 7, 10],
+                    3 => vec![0, 1, 10],
+                    4 => (20..27).chain([10]).collect(),
+                    // The Steam rows (2, 6) need the relay files: PC only.
+                    _ if cfg!(target_os = "horizon") => vec![13, 14, 15, 16, 17],
+                    _ => vec![2, 6, 13, 14, 15, 16, 17],
+                }
+            };
         }
         match self.section {
             0 if self.map_detail => {
@@ -208,10 +226,34 @@ impl Menu {
         self.map_detail = false;
         self.multiplayer = section == 3;
         self.browser = false;
+        self.lan_browser = false;
         self.network_page = 0;
         self.daylight = false;
         self.selected = self.rows().first().copied().unwrap_or(100 + section);
         self.status.clear();
+    }
+
+    /// Whether the item list has focus. An empty list never does: the section list keeps it.
+    fn items_focused(&self) -> bool {
+        !self.section_focus && !self.rows().is_empty()
+    }
+    fn focus_sections(&mut self) {
+        self.section_focus = true;
+    }
+    fn focus_items(&mut self) {
+        self.section_focus = false;
+    }
+    /// Up (`-1`) or down (`1`) in the focused list, wrapping at both ends. Sections change through
+    /// `select_section`, so the item list follows them.
+    fn move_cursor(&mut self, delta: isize) {
+        if self.items_focused() {
+            let rows = self.rows();
+            let index = rows.iter().position(|r| *r == self.selected).unwrap_or(0) as isize;
+            self.selected = rows[(index + delta).rem_euclid(rows.len() as isize) as usize];
+        } else {
+            let count = (SECTIONS.len() + self.custom_sections.len()) as isize;
+            self.select_section((self.section as isize + delta).rem_euclid(count) as usize);
+        }
     }
 }
 
@@ -432,7 +474,7 @@ fn setup(
                     }
                 });
                 body.spawn((StatusLabel,Text::new(""),TextFont {font_size:14.,..default()},TextColor(Color::srgb(0.78,0.96,0.3))));
-                body.spawn((Text::new("Up/Down Navigate    Enter / A Select    Left/Right Adjust    Tab Sections\nCustom tuning: use Apply below. Other settings save automatically."),TextFont {font_size:13.,..default()},TextColor(Color::srgb(0.55,0.62,0.62))));
+                body.spawn((Text::new("Up/Down Navigate    Enter / A Select    Left/Right Adjust    LB/RB Switch list    Tab Sections\nCustom tuning: use Apply below. Other settings save automatically."),TextFont {font_size:13.,..default()},TextColor(Color::srgb(0.55,0.62,0.62))));
             });
         });
     });
@@ -453,7 +495,8 @@ fn setup(
         selected_map,
         multiplayer: false,
         browser: false, network_page: 0, browser_count: 0,
-        daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations, pending_travel: None,
+        lan_browser: false,
+        daylight: false, section: 0, section_focus: false, custom_sections: Vec::new(), map_detail: false, destinations, pending_travel: None,
     });
 }
 /// GRAPHICS-section rows for the game_audio volume settings.
@@ -509,7 +552,22 @@ pub(crate) fn interact(
     }
     if keys.just_pressed(KeyCode::Escape) || nav.pressed & 0x10 != 0 || (menu.open && nav.pressed & 0x2000 != 0) {
         if menu.open && menu.multiplayer && (menu.browser || menu.network_page != 0) {
-            menu.browser = false; if menu.network_page==1 {menu.browser=true;menu.network_page=0;menu.selected=8;} else {let from_debug=menu.network_page==4;menu.network_page = 0; menu.selected = if from_debug {15} else {2};}
+            menu.browser = false;
+            if menu.network_page == 1 {
+                menu.browser = true;
+                menu.network_page = 0;
+                menu.selected = 8;
+            } else {
+                let from_debug = menu.network_page == 4;
+                menu.network_page = 0;
+                menu.selected = if from_debug {
+                    15
+                } else if menu.lan_browser {
+                    17
+                } else {
+                    2
+                };
+            }
         } else if menu.open && menu.map_detail {
             menu.map_detail = false;
             menu.selected = 1000 + menu.selected_map;
@@ -521,6 +579,7 @@ pub(crate) fn interact(
             || !menu.multiplayer
             || menu.browser
             || !matches!(menu.selected, 3 | 7)
+            || !menu.items_focused()
             || !event.state.is_pressed()
         {
             continue;
@@ -549,37 +608,47 @@ pub(crate) fn interact(
     }
     if menu.open {
         menu.browser_count = net.browser_rows.len();
+        menu.lan_browser = net.browser_lan;
         if keys.just_pressed(KeyCode::Tab) {
             let direction = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) { SECTIONS.len()+menu.custom_sections.len()-1 } else { 1 };
             let section = (menu.section + direction) % (SECTIONS.len()+menu.custom_sections.len());
             menu.select_section(section);
         }
-        let mut visible = menu.rows();
-        visible.extend(100..100 + SECTIONS.len()+menu.custom_sections.len());
-        let index = visible.iter().position(|r| *r == menu.selected).unwrap_or(0);
-        let rows = visible.len();
         if keys.just_pressed(KeyCode::ArrowUp) || nav.pressed & 1 != 0 {
-            menu.selected = visible[(index + rows - 1) % rows];
+            menu.move_cursor(-1);
         }
         if keys.just_pressed(KeyCode::ArrowDown) || nav.pressed & 2 != 0 {
-            menu.selected = visible[(index + 1) % rows];
+            menu.move_cursor(1);
         }
-        let adjustable = (menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || AUDIO_ROWS.contains(&menu.selected) || menu.selected == FRAME_STATS_ROW))
-            || (!menu.multiplayer && !menu.daylight && menu.section == 1 && menu.selected == CAMERA_ANGLE_ROW);
-        if adjustable && (keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0) {
-            action = Some((menu.selected, -1));
+        // Bumpers switch focus between the section list (LB) and the item list (RB).
+        if nav.pressed & 0x0100 != 0 {
+            menu.focus_sections();
         }
-        if (adjustable && (keys.just_pressed(KeyCode::ArrowRight) || nav.pressed & 8 != 0))
-            || (keys.just_pressed(KeyCode::Enter)
-                && !keys.pressed(KeyCode::AltLeft)
-                && !keys.pressed(KeyCode::AltRight))
-            || nav.pressed & 0x1000 != 0
-        {
-            action = Some((menu.selected, 1));
+        if nav.pressed & 0x0200 != 0 {
+            menu.focus_items();
         }
+        // Left and right change the value of an adjustable item in the item list.
+        let items = menu.items_focused();
+        let adjustable = items && ((menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected)) || (menu.daylight && menu.selected < 3) || (!menu.multiplayer && !menu.daylight && (menu.selected < 4 || AUDIO_ROWS.contains(&menu.selected) || menu.selected == FRAME_STATS_ROW))
+            || (!menu.multiplayer && !menu.daylight && menu.section == 1 && menu.selected == CAMERA_ANGLE_ROW));
+        if keys.just_pressed(KeyCode::ArrowLeft) || nav.pressed & 4 != 0 {
+            if adjustable { action = Some((menu.selected, -1)); }
+        }
+        if keys.just_pressed(KeyCode::ArrowRight) || nav.pressed & 8 != 0 {
+            if adjustable { action = Some((menu.selected, 1)); }
+        }
+        if (keys.just_pressed(KeyCode::Enter) && !keys.pressed(KeyCode::AltLeft) && !keys.pressed(KeyCode::AltRight)) || nav.pressed & 0x1000 != 0 {
+            action = Some((if menu.items_focused() { menu.selected } else { 100 + menu.section }, 1));
+        }
+        let mut visible = menu.rows();
+        visible.extend(100..100 + SECTIONS.len()+menu.custom_sections.len());
         for (interaction, row) in &buttons {
             if *interaction == Interaction::Pressed && visible.contains(&row.0) {
-                menu.selected = row.0;
+                // A section row is handled below; an item row takes focus.
+                if !(100..100 + SECTIONS.len()+menu.custom_sections.len()).contains(&row.0) {
+                    menu.focus_items();
+                    menu.selected = row.0;
+                }
                 action = Some((row.0, 1));
             }
         }
@@ -587,6 +656,7 @@ pub(crate) fn interact(
     if let Some((row, _)) = action {
         if (100..100 + SECTIONS.len()+menu.custom_sections.len()).contains(&row) {
             menu.select_section(row - 100);
+            menu.focus_items();
             action = None;
         } else if (200..264).contains(&row) {
             if let Some((_,entries))=menu.custom_sections.get(menu.section.saturating_sub(SECTIONS.len())) {
@@ -656,7 +726,7 @@ pub(crate) fn interact(
                 }
                 10 => {
                     menu.browser = false;
-                    menu.selected = 6;
+                    menu.selected = if menu.lan_browser { 17 } else { 6 };
                 }
                 _ => {}
             }
@@ -669,8 +739,17 @@ pub(crate) fn interact(
                 4 => net.steam(false),
                 5 => net.leave(),
                 6 => {
+                    net.browser_lan = false;
                     net.browse(0);
                     menu.browser = true;
+                    menu.lan_browser = false;
+                    menu.selected = 0;
+                }
+                16 => net.host_lan(),
+                17 => {
+                    net.find_lan();
+                    menu.browser = true;
+                    menu.lan_browser = true;
                     menu.selected = 0;
                 }
                 12 => { menu.browser=false;menu.network_page=1;menu.selected=3; },
@@ -764,6 +843,10 @@ pub(crate) fn interact(
                 Err(e) => format!("Could not save: {e}"),
             };
         }
+    }
+    // The LAN finder probes only while its list is the browser's (closing the menu keeps it).
+    if !menu.browser && net.browser_lan {
+        net.stop_finding();
     }
     if menu.open && !net.active() {
         time.pause();
@@ -1066,11 +1149,19 @@ fn labels(
         } else if menu.daylight {
             if title { "DAY & NIGHT" } else { "Custom maps: time and ambient light. Retail lighting stays authored." }
         } else if menu.browser {
-            if title { "FIND A SESSION" } else { "Browse public lobbies and join a crew." }
+            if menu.lan_browser {
+                if title { "FIND A LAN GAME" } else { "Games hosted on this Wi-Fi network. Pick one to join." }
+            } else if title {
+                "FIND A SESSION"
+            } else {
+                "Browse public lobbies and join a crew."
+            }
         } else if menu.multiplayer && menu.network_page != 0 {
             match (menu.network_page, title) {
                 (1,true) => "JOIN A FRIEND", (1,false) => "Select the code field, type your friend's code, then choose Join session.",
-                (2,true) => "PLAYER & SESSION", (2,false) => "Select your name to edit it. Leave your current session here.",
+                (2,true) => "PLAYER & SESSION",
+                (2,false) if cfg!(target_os = "horizon") => "Your name comes from settings/player.json on the SD card. Leave your current game here.",
+                (2,false) => "Select your name to edit it. Leave your current session here.",
                 (4,true) => "MULTIPLAYER DEBUG", (4,false) => "Live network and mod diagnostics. Scroll or use Up/Down to inspect.",
                 (3,true) => "LOCAL TESTING", (_,false) => "Advanced: host or join a local test session without Steam.",
                 _ => "MULTIPLAYER",
@@ -1115,21 +1206,18 @@ fn labels(
         } else if menu.browser {
             match label.0 {
                 0 => "Refresh sessions".into(),
+                1..=5 if menu.lan_browser => net.lan_label(label.0 - 1),
                 1..=5 => net
                     .browser_rows
                     .get(label.0 - 1)
-                    .map(|r| {
+                    .map(|row| {
                         format!(
                             "{} | {}/{} | #{}{}",
-                            r.map,
-                            r.players,
-                            r.capacity,
-                            r.id % 100000,
-                            if r.compatible {
-                                ""
-                            } else {
-                                " | Update required"
-                            }
+                            row.map,
+                            row.players,
+                            row.capacity,
+                            row.id % 100000,
+                            if row.compatible { "" } else { " | Update required" }
                         )
                     })
                     .unwrap_or_else(|| "--".into()),
@@ -1147,12 +1235,14 @@ fn labels(
                 3 => format!(
                     "Join code: {}{}",
                     net.join_code,
-                    if menu.selected == 3 { "_" } else { "" }
+                    if menu.selected == 3 && menu.items_focused() { "_" } else { "" }
                 ),
                 4 => "Join session".into(),
                 5 => "Leave multiplayer".into(),
                 6 => "Find a session".into(),
-                7 => format!("Your name: {}{}", net.player_name, if menu.selected == 7 { "_" } else { "" }),
+                7 => format!("Your name: {}{}", net.player_name, if menu.selected == 7 && menu.items_focused() { "_" } else { "" }),
+                16 => "Host LAN game".into(),
+                17 => "Find LAN games".into(),
                 12 => "Join with a code".into(),
                 8 => "Resume".into(),
                 9 => "Quit game".into(),
@@ -1212,17 +1302,23 @@ fn labels(
                 format!("\nYour connection code: {}", net.host_code)
             }
         )
-    } else if menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected) {
+    } else if menu.items_focused() && menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected) {
         format!("{}\n{}", OPTIONS[menu.selected-300].description,
             if menu.custom_dirty {"Changes pending - select Apply custom tuning below. Left/Right adjusts; drag bars with the mouse."} else {"Left/Right adjusts; drag bars with the mouse. Custom starts from Easy."})
     } else {
         menu.status.clone()
     };
     let visible = menu.rows();
+    let items = menu.items_focused();
+    let open = 100 + menu.section;
     for (row, interaction, mut color, mut node) in &mut buttons {
         node.display = if visible.contains(&row.0) || (100..100+SECTIONS.len()+menu.custom_sections.len()).contains(&row.0) { Display::Flex } else { Display::None };
-        color.0 = if row.0 == menu.selected || row.0 == 100 + menu.section || *interaction == Interaction::Hovered {
+        // The focused row is bright. While the items have focus, the open section stays dimly marked.
+        let focused = if items { row.0 == menu.selected } else { row.0 == open };
+        color.0 = if focused || *interaction == Interaction::Hovered {
             Color::srgb(0.24, 0.33, 0.12)
+        } else if row.0 == open {
+            Color::srgb(0.15, 0.21, 0.10)
         } else {
             Color::srgb(0.075, 0.09, 0.095)
         };
@@ -1341,7 +1437,7 @@ mod tests {
             .insert_resource(Menu {
                 open: false, selected: 0, settings: GraphicsSettings::default(),
                 difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, path: PathBuf::new(), status: String::new(),
-                multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
+                multiplayer: false, browser: false, network_page: 0, browser_count: 0, lan_browser: false, daylight: false, section: 0, section_focus: false, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
                 maps: vec![crate::map_library::Entry { label: "Test world".into(), path: None }], selected_map: 0,
             })
             .add_systems(Update, apply);
@@ -1382,7 +1478,7 @@ mod tests {
             open: true, selected: 1000, settings: GraphicsSettings::default(),
             path: PathBuf::new(), difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, status: String::new(),
             maps: (0..40).map(|i| crate::map_library::Entry { label: format!("Map {i}"), path: None }).collect(),
-            selected_map: 0, multiplayer: false, browser: false, network_page: 0, browser_count: 0, daylight: false, section: 0, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
+            selected_map: 0, multiplayer: false, browser: false, network_page: 0, browser_count: 0, lan_browser: false, daylight: false, section: 0, section_focus: false, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
         };
         for section in 0..SECTIONS.len() {
             menu.select_section(section);
@@ -1413,7 +1509,7 @@ mod tests {
         assert!(menu.rows().is_empty());
         menu.select_section(3);
         assert!(menu.multiplayer);
-        assert_eq!(menu.rows(), vec![2,6,13,14,15]);
+        assert_eq!(menu.rows(), vec![2,6,13,14,15,16,17]);
         menu.network_page = 4;
         assert_eq!(menu.rows(), (20..27).chain([10]).collect::<Vec<_>>());
         menu.network_page = 1;
@@ -1421,6 +1517,10 @@ mod tests {
         menu.network_page = 3;
         assert_eq!(menu.rows(), vec![0,1,10]);
         menu.browser = true;
+        menu.browser_count = 2;
+        menu.lan_browser = true;
+        assert_eq!(menu.rows(), vec![0,1,2,6,7,10]);
+        menu.lan_browser = false;
         assert!(menu.rows().contains(&8));
         assert!(!SECTIONS.iter().any(|(name,_)| matches!(*name,"SESSION"|"WORLD")));
         menu.select_section(2);
@@ -1466,6 +1566,51 @@ mod tests {
         assert_eq!(cycle(LIMITS, 0, -1), 240);
         assert_eq!(cycle(LIMITS, 240, 1), 0);
     }
+    #[test]
+    fn focus_moves_between_section_and_item_lists() {
+        let mut menu = Menu {
+            open: true, selected: 0, settings: GraphicsSettings::default(),
+            path: PathBuf::new(), difficulty: Difficulty::Easy, custom:Tuning::default(), custom_defaults:Tuning::default(), custom_apply:false, custom_dirty:false, status: String::new(),
+            maps: Vec::new(), selected_map: 0, multiplayer: false, browser: false, network_page: 0, browser_count: 0, lan_browser: false, daylight: false, section: 0, section_focus: false, custom_sections: Vec::new(), map_detail: false, destinations: Vec::new(), pending_travel: None,
+        };
+        // SKATER rows are 3, camera angle, 8, 10. Up and down wrap inside the item list.
+        menu.select_section(1);
+        assert!(menu.items_focused());
+        let order: Vec<usize> = (0..5).map(|_| { menu.move_cursor(1); menu.selected }).collect();
+        assert_eq!(order, vec![CAMERA_ANGLE_ROW, 8, 10, 3, CAMERA_ANGLE_ROW]);
+        menu.move_cursor(-1);
+        assert_eq!(menu.selected, 3);
+        // Focusing the section list: up and down now change the section, and the item list follows.
+        menu.focus_sections();
+        assert!(!menu.items_focused());
+        menu.move_cursor(1);
+        assert_eq!((menu.section, menu.multiplayer), (2, false));
+        assert_eq!(menu.selected, 0);
+        assert!(!menu.items_focused());
+        // Up from the first section wraps to the last.
+        menu.select_section(0);
+        menu.focus_sections();
+        menu.move_cursor(-1);
+        assert_eq!(menu.section, SECTIONS.len() - 1);
+        // Focusing the items again: they keep their own cursor and wrap.
+        menu.select_section(4);
+        assert_eq!(menu.rows(), vec![7, 11, 14, 19]);
+        assert_eq!(menu.selected, 7);
+        menu.focus_items();
+        assert!(menu.items_focused());
+        for expected in [11, 14, 19, 7] {
+            menu.move_cursor(1);
+            assert_eq!(menu.selected, expected);
+        }
+        // An empty item list cannot take focus: the section list keeps it.
+        menu.custom_sections = vec![("Empty".into(), Vec::new())];
+        menu.select_section(SECTIONS.len());
+        menu.focus_items();
+        assert!(menu.rows().is_empty());
+        assert!(!menu.items_focused());
+        menu.move_cursor(1);
+        assert_eq!(menu.section, 0);
+    }
 }
 
 #[derive(Component)] struct CustomTrack(usize);
@@ -1481,7 +1626,7 @@ fn custom_sliders(mut menu: ResMut<Menu>, mouse: Res<ButtonInput<MouseButton>>,
     if let Some(index)=*dragging {
         if let Some((_,position))=tracks.iter().find(|(t,_)|t.0==index) {
             if let Some(pos)=position.normalized {
-                menu.custom.set_fraction(index,pos.x); menu.custom_dirty=true; menu.selected=300+index;
+                menu.custom.set_fraction(index,pos.x); menu.custom_dirty=true; menu.selected=300+index; menu.focus_items();
             }
         }
     }

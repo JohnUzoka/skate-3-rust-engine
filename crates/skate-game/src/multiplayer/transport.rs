@@ -1,3 +1,4 @@
+use bevy::prelude::info;
 use skate_net::directory::{self, Command as LobbyCommand, Event, Request, Response};
 use std::{
     io,
@@ -35,13 +36,29 @@ pub(super) fn endpoint(addr: SocketAddr) -> io::Result<u64> {
 }
 pub(super) struct Direct {
     socket: UdpSocket,
+    label: String,
 }
 impl Direct {
     pub fn new(bind: SocketAddr) -> io::Result<Self> {
         endpoint(bind)?;
         let socket = UdpSocket::bind(bind)?;
         skate_net::socket::configure(&socket)?;
-        Ok(Self { socket })
+        let (rx, tx) = skate_net::socket::buffer_sizes(&socket);
+        info!("MULTIPLAYER_SOCKET bind={bind} recv_buffer={rx} send_buffer={tx}");
+        Ok(Self {
+            socket,
+            label: "Direct connection (Steam not required)".into(),
+        })
+    }
+
+    /// The text `receive` shows as the provider: "Hosting a LAN game", "Joining <name>".
+    pub fn labelled(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
+    pub fn local_port(&self) -> u16 {
+        self.socket.local_addr().map_or(0, |address| address.port())
     }
 }
 impl Transport for Direct {
@@ -78,7 +95,7 @@ impl Transport for Direct {
         Ok(output)
     }
     fn status(&self) -> String {
-        "Direct connection (Steam not required)".into()
+        self.label.clone()
     }
 }
 pub(super) struct Steam {

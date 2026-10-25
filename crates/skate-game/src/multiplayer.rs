@@ -5,6 +5,7 @@ mod appearance_transfer;
 mod transport;
 mod nametags;
 mod hud;
+mod lan;
 use crate::{
     app::SimulationSet,
     physics::{GamePhysics, SkaterRuntime, network},
@@ -32,6 +33,13 @@ pub(crate) fn unique() -> u64 {
         ]
         .concat(),
     )
+}
+fn offline_status() -> &'static str {
+    if cfg!(target_os = "horizon") {
+        "Offline. Host a LAN game, or find one on this Wi-Fi."
+    } else {
+        "Offline. Steam is only needed for Steam multiplayer."
+    }
 }
 #[derive(Default)]
 pub(crate) struct Options {
@@ -94,6 +102,11 @@ pub(crate) struct Multiplayer {
     pub browser_rows: Vec<Row>,
     pub browser_page: usize,
     pub browser_total: usize,
+    pub browser_lan: bool,
+    /// LAN hosting/finding/joined state, owned by multiplayer/lan.rs.
+    lan: Option<lan::Lan>,
+    /// LAN browser games in the visible page's row order.
+    lan_games: Vec<skate_net::lan::Game>,
     pub browser_status: String,
     pub player_name: String,
     name_path: std::path::PathBuf,
@@ -101,8 +114,15 @@ pub(crate) struct Multiplayer {
 }
 impl Multiplayer {
     pub(crate) fn diagnostic_summary(&self) -> String {
-        let provider = if self.room.is_some() { "platform_relay" }
-            else if self.transport.is_some() { "direct_local" } else { "inactive" };
+        let provider = if self.lan.is_some() && self.transport.is_some() {
+            "lan"
+        } else if self.room.is_some() {
+            "platform_relay"
+        } else if self.transport.is_some() {
+            "direct_local"
+        } else {
+            "inactive"
+        };
         let rtt = self.lobby.as_ref().map(|lobby| lobby.stats.rtt_ms);
         format!("provider:{provider} active:{} remote_count:{} rtt_ms:{rtt:?}", self.active(), self.remotes.len())
     }
@@ -184,13 +204,16 @@ impl Multiplayer {
         self.names.clear();
         self.host_code.clear();
         self.room = None;
-        self.status = "Offline. Steam is only needed for Steam multiplayer.".into();
+        self.lan = None;
+        self.status = offline_status().into();
     }
     fn start(&mut self, transport: Box<dyn transport::Transport>, session: u64, host: Option<u64>) {
         self.leave();
         self.info.id = unique();
         self.loopback = transport.loopback();
         let mut lobby = Session::new(session, self.info, host);
+        #[cfg(target_os = "horizon")]
+        lobby.blobs.limit_receive(64 * 1024);
         lobby.set_loopback(self.loopback);
         self.lobby = Some(lobby);
         self.transport = Some(transport);
@@ -253,6 +276,10 @@ impl Multiplayer {
         }
     }
     pub fn browse(&mut self, page: usize) {
+        if self.browser_lan {
+            self.lan_page(page);
+            return;
+        }
         self.lobby_command(LobbyCommand::Browse {
             page,
             map: self.info.map,
@@ -260,6 +287,12 @@ impl Multiplayer {
         });
     }
     pub fn join_row(&mut self, index: usize) {
+        if self.browser_lan {
+            if let Some(game) = self.lan_games.get(index).cloned() {
+                self.join_lan(&game);
+            }
+            return;
+        }
         let Some(row) = self.browser_rows.get(index) else {
             return;
         };
@@ -354,7 +387,7 @@ impl Plugin for MultiplayerPlugin {
             schema,
             anchors: network::anchors(skater),
             remotes: BTreeMap::new(),
-            status: "Offline. Steam is only needed for Steam multiplayer.".into(),
+            status: offline_status().into(),
             join_code: String::new(),
             host_code: String::new(),
             last_body: Instant::now(),
@@ -376,6 +409,9 @@ impl Plugin for MultiplayerPlugin {
             browser_rows: vec![],
             browser_page: 0,
             browser_total: 0,
+            browser_lan: false,
+            lan: None,
+            lan_games: vec![],
             browser_status: String::new(),
             name_path: player_name_path(&config.asset_root),
             player_name: config
@@ -401,7 +437,8 @@ impl Plugin for MultiplayerPlugin {
             }
         }
         app.insert_resource(net)
-            .add_systems(PreUpdate, (world_changed, receive, sync_names).chain().after(crate::map_transition::MapTransitionSet))
+            .add_systems(PreUpdate, (world_changed, receive, lan::service, sync_names).chain().after(crate::map_transition::MapTransitionSet))
+            .add_systems(Update, lan::test_hook)
             .add_systems(Startup, hud::setup)
             .add_systems(Update, hud::draw)
             .add_systems(Update, send_pose)
@@ -419,9 +456,19 @@ impl Plugin for MultiplayerPlugin {
             )
             .add_systems(FixedUpdate, send.after(SimulationSet::Physics))
             .init_resource::<appearance::Appearances>()
-            .add_systems(Last, appearance::cleanup)
+            .add_systems(Last, (leave_on_exit, appearance::cleanup))
             .add_systems(Update, appearance::sync.before(render::spawn))
             .add_plugins(render::RemoteRenderPlugin);
+    }
+}
+
+/// Quitting tells the other players at once (GOODBYE) instead of after their 5 s timeout.
+fn leave_on_exit(mut exit: MessageReader<AppExit>, mut net: ResMut<Multiplayer>) {
+    if exit.read().next().is_some() && net.active() {
+        if net.lan.is_some() {
+            eprintln!("[LAN] left: the game is closing");
+        }
+        net.leave();
     }
 }
 // A world swap replaces the local physics assembly. Never retain lobby identity
@@ -445,6 +492,7 @@ fn world_changed(
     }
     net.anchors = network::anchors(&skater);
     net.browser_rows.clear();
+    net.lan_games.clear();
     net.browser_page = 0;
     net.browser_total = 0;
     net.browser_status.clear();
@@ -637,11 +685,12 @@ fn receive(mut net: ResMut<Multiplayer>) {
         lobby.notice.clone()
     } else if lobby.actors.len() > 1 {
         format!(
-            "Connected: {}/10 players | collisions on | synced characters",
-            lobby.actors.len()
+            "Connected: {}/{} players | collisions on | synced characters",
+            lobby.actors.len(),
+            lobby.capacity()
         )
     } else {
-        format!("{} | waiting for players (1/10)", provider)
+        format!("{} | waiting for players (1/{})", provider, lobby.capacity())
     };
     if net.last_metrics.elapsed() >= Duration::from_secs(1) {
         let dt = net.last_metrics.elapsed().as_secs_f64();
@@ -730,6 +779,13 @@ fn player_name_path(asset_root: &std::path::Path) -> std::path::PathBuf {
 
 fn load_player_name(path: &std::path::Path) -> String {
     let Ok(bytes) = std::fs::read(path) else {
+        // A Switch has no keyboard to type a name: give each console its own and keep it. Edit
+        // settings/player.json on the SD card, or set the name on the PC and export again.
+        if cfg!(target_os = "horizon") {
+            let name = format!("Switch-{:04X}", unique() & 0xFFFF);
+            persist_player_name(path, &name);
+            return name;
+        }
         return "Player".into();
     };
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
