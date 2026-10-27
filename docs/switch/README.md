@@ -79,6 +79,25 @@ A session holds three players, the host included. Any other player is refused wi
 
 The player name comes from `switch/skate3rust/settings/player.json`. The export script copies it from the PC; if the file is missing, the Switch creates a name such as `Switch-1A2B` on first launch. Imported characters appear as the stock skater on the Switch.
 
+## Custom maps
+
+Every `.skate` file in `switch/skate3rust/maps/` (or `maps/private/`) is a map in
+the menu, named after its file: `My_Park.skate` is "My Park".
+
+Maps are made in Blender 5.0 or later with the "Owned World Authoring" add-on from
+the Skate 3 Rust Engine project,
+[`tools/vendor/university/tools/blender_owned_map/owned_world_material_addon`](https://github.com/SK8-ENGINE/skate-3-rust-engine/tree/2e16697797c8358d16f747a8259354ff2921041a/tools/vendor/university/tools/blender_owned_map/owned_world_material_addon):
+
+1. Zip the `owned_world_material_addon` folder and install the ZIP in Blender:
+   Edit > Preferences > Add-ons > Install from Disk.
+2. Build the map, then in the 3D view's sidebar, under **Skate 3 Map**, use
+   **Validate Map** and **Export Skate 3 Custom Engine Map** to write a `.skate`.
+3. Copy the `.skate` to `switch/skate3rust/maps/` and choose it from the maps menu.
+
+Like a retail map, a custom map builds its textures for the Switch at its first
+launch. A map with much more texture or geometry than DownTown, the largest retail
+map, can run out of memory on the Switch where the PC has room.
+
 ## Options
 
 The Switch build turns on the rendering options that ran best on the console. To
@@ -109,7 +128,8 @@ beside it. Include both when reporting a problem.
 ## Known issues
 
 - University is the map played on the Switch; DownTown and Industrial haven't been
-  tested there. The test world isn't available on the Switch: it stops the GPU.
+  tested there. The test world is opt-in on the Switch (`env SKATE_TEST_WORLD=1`) and
+  runs at 30–40 fps: its sun lights and shadows each pixel of its ground.
 - A custom skater (from the character customiser) runs slower than the default
   skater: each of its ten parts poses its own skeleton.
 - Road lines in the distance can shimmer slightly.
