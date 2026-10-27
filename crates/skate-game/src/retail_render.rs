@@ -1218,6 +1218,26 @@ pub(crate) fn log_page_uniform_support(world: &World) {
 static VIS_CULL_SUPPORTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Whether the map on screen is a retail map. `SKATE_VIS_CULL`'s marks only work on retail maps:
+/// on a custom map they leave the world undrawn (on the emulator Kenney Park's ramps are hidden
+/// with the marks on and drawn with `SKATE_VIS_CULL=0`). Set when a map commits, before its world
+/// pipelines compile (map_transition.rs), and read by `map_world_variant` and the cull.
+static RETAIL_MAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Sets whether the map on screen is a retail map, and says so for a custom one.
+pub(crate) fn set_retail_map(retail: bool) {
+    RETAIL_MAP.store(retail, std::sync::atomic::Ordering::Relaxed);
+    if !retail {
+        eprintln!(
+            "[Skate] SKATE_VIS_CULL marks off: this map is not a retail map, so the world draws without them"
+        );
+    }
+}
+
+pub(crate) fn retail_map() -> bool {
+    RETAIL_MAP.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn vis_cull_supported() -> bool {
     VIS_CULL_SUPPORTED.load(std::sync::atomic::Ordering::Relaxed)
 }

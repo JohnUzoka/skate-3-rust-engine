@@ -350,6 +350,7 @@ fn commit(world: &mut World, mut prepared: PreparedWorld) -> String {
     prepared.scene.publish(world);
     crate::camera::set_world_environment(world, prepared.retail);
     world.insert_resource(crate::retail_render::RetailScene(prepared.retail));
+    crate::retail_render::set_retail_map(prepared.retail);
     info!("SKATE_TRIGGERS map={:?} volumes={} source={}", prepared.metadata.name, prepared.triggers.map.len(), prepared.triggers.origin);
     // Mod-added volumes and switches are world-scoped, like sdk.volumes.
     world.insert_resource(prepared.triggers);

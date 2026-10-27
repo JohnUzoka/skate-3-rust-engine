@@ -1071,12 +1071,14 @@ fn extract_render_skips(
     if !hold.released && hold.frames > MARKS_HOLD_FRAMES {
         hold.released = hold.frames > MARKS_HOLD_MAX_FRAMES
             || pipeline_cache.is_none_or(|cache| cache.waiting_pipelines().next().is_none());
-        if hold.released && options.triangle_cull & bevy::pbr::TRIANGLE_CULL_MARKS != 0 {
+        if hold.released && crate::retail_render::retail_map() && options.triangle_cull & bevy::pbr::TRIANGLE_CULL_MARKS != 0 {
             info!("[Skate] SKATE_VIS_CULL: marks kept from the change's frame {}", hold.frames);
         }
     }
     let unmarked = options.triangle_cull & bevy::pbr::TRIANGLE_CULL_MARKS != 0
-        && (!crate::retail_render::vis_cull_supported() || !hold.released);
+        && (!crate::retail_render::vis_cull_supported()
+            || !hold.released
+            || !crate::retail_render::retail_map());
     let triangle_cull =
         if options.world.fetch || unmarked { 0 } else { options.triangle_cull };
     bevy::pbr::TRIANGLE_CULL.store(triangle_cull, std::sync::atomic::Ordering::Relaxed);
@@ -1192,24 +1194,36 @@ fn world_shadows(
     }
 }
 
-/// Puts `RenderOptions::world` on every world material, so a `SKATE_PERF_MATRIX` step can switch
+/// The world variant a map's materials take: `options.world`, with the marks off on a map that
+/// isn't retail, so nothing marks and the cull keeps nothing (`retail_render::retail_map`).
+pub(crate) fn map_world_variant(world: WorldVariant) -> WorldVariant {
+    if crate::retail_render::retail_map() {
+        world
+    } else {
+        WorldVariant { vis_cull: 0, mark_after_test: false, ..world }
+    }
+}
+
+/// Puts each map's world variant on every world material, so a `SKATE_PERF_MATRIX` step can switch
 /// the world's shader variant. Bevy prepares a changed material again and specializes its draws
 /// again (bevy_pbr `specialize_material_meshes` checks `AssetChanged`), which compiles the
 /// variant's pipelines the first time. A map builds its materials with the launch variant
-/// (retail_render.rs `MaterialTable::seal`), so in normal play this changes nothing.
+/// (retail_render.rs `WorldMaterial::with_pages`), so for a retail map this changes nothing; a
+/// custom map's materials lose the marks when it commits.
 fn world_variant(
     options: Res<RenderOptions>,
     materials: Option<ResMut<Assets<crate::retail_render::WorldMaterial>>>,
 ) {
     let Some(mut materials) = materials else { return };
+    let wanted = map_world_variant(options.world);
     let stale: Vec<_> = materials
         .iter()
-        .filter(|(_, material)| material.variant != options.world)
+        .filter(|(_, material)| material.variant != wanted)
         .map(|(id, _)| id)
         .collect();
     for id in stale {
         if let Some(material) = materials.get_mut(id) {
-            material.variant = options.world;
+            material.variant = wanted;
         }
     }
 }

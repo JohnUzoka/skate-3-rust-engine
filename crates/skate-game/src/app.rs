@@ -57,6 +57,11 @@ pub(crate) fn build(
     skater: SkaterRuntime,
 ) -> App {
     let retail_scene = config.map.as_ref().is_some_and(|map| crate::retail_render::RetailScene::for_map(map));
+    // A map given before the window sets the gate here. The Switch's start map loads behind the
+    // loading screen (`Config::boot_map`), so `map_transition` sets it on commit instead.
+    if config.map.is_some() {
+        crate::retail_render::set_retail_map(retail_scene);
+    }
     let mut app = App::new();
     crate::custom_models::register_source(&mut app);
     crate::modding::register_source(&mut app);
