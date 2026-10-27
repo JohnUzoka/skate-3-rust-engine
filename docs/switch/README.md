@@ -96,7 +96,9 @@ the Skate 3 Rust Engine project,
 
 Like a retail map, a custom map builds its textures for the Switch at its first
 launch. A map with much more texture or geometry than DownTown, the largest retail
-map, can run out of memory on the Switch where the PC has room.
+map, can run out of memory on the Switch where the PC has room. On a map with lights
+of its own, the skater is lit by them; on one without, it's shaded as on the retail
+maps (`env SKATE_PROCEDURAL_CHARACTER=1` or `=0` picks one for every map).
 
 ## Options
 

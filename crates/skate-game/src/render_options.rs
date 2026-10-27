@@ -130,12 +130,14 @@
 //! - `SKATE_PROCEDURAL_TONEMAPPING=none|aces|tony`: Bevy's tonemapping for such a scene: none,
 //!   ACES fitted, or TonyMcMapface, which reads a 3D lookup table and is Bevy's default and the
 //!   default here.
-//! - `SKATE_PROCEDURAL_CHARACTER=1`: on such a scene the skater is shaded as on a retail map, with
-//!   the character shader (retail_character.rs `load`), lit by `character-lighting.json`'s
-//!   default probe and a sun overhead. Unset, it keeps the `StandardMaterial`s it was made with,
-//!   lit by Bevy. The Switch turned it on while Bevy's lit `StandardMaterial` lost the GPU within
-//!   a few frames wherever it drew (findings 55 and 59); bevy-horizon's Mesa patch 0032
-//!   (`NAK_DEBUG=hzero`) fixed that.
+//! - `SKATE_PROCEDURAL_CHARACTER=0|1`: how the skater is shaded on such a scene. Unset, it keeps
+//!   the `StandardMaterial`s it was made with, lit by Bevy, when the scene has a light of its own
+//!   (the test world's sun, a map's lights), and takes the retail maps' character shader
+//!   (retail_character.rs `load`), lit by `character-lighting.json`'s default probe and a sun
+//!   overhead, when it has none (Kenney Park), where Bevy's material would have only the ambient
+//!   light. 1 takes the character shader on every such scene, 0 on none. The Switch took it on
+//!   every one while Bevy's lit `StandardMaterial` lost the GPU within a few frames wherever it
+//!   drew (findings 55 and 59); bevy-horizon's Mesa patch 0032 (`NAK_DEBUG=hzero`) fixed that.
 //! - `SKATE_OCCLUSION=1`: Bevy's GPU occlusion culling on the gameplay camera (`OcclusionCulling`,
 //!   which Bevy ignores without the depth prepass). The prepass first draws the meshes that were
 //!   visible the frame before and reduces their depth to a pyramid of smaller and smaller images,
@@ -509,9 +511,10 @@ pub(crate) struct RenderOptions {
     pub procedural_hdr: bool,
     /// `SKATE_PROCEDURAL_TONEMAPPING`: Bevy's tonemapping for a scene without a retail map.
     pub procedural_tonemapping: Tonemapping,
-    /// `SKATE_PROCEDURAL_CHARACTER`: on a scene without a retail map, the skater is shaded by the
-    /// character shader retail maps use, not Bevy's lit `StandardMaterial`.
-    pub procedural_character: bool,
+    /// `SKATE_PROCEDURAL_CHARACTER`: on a scene without a retail map, whether the skater is shaded
+    /// by the character shader retail maps use instead of Bevy's lit `StandardMaterial`. `None`:
+    /// when the scene has no light of its own (retail_character.rs `load`).
+    pub procedural_character: Option<bool>,
     /// `SKATE_UPSCALE`: how the scene image is stretched to the window below 100% scale.
     pub upscale: Upscale,
     /// `SKATE_PRESENT_TO_WINDOW`: the presentation camera draws the image and the UI into the
@@ -572,7 +575,7 @@ impl Default for RenderOptions {
             tone_gamma: true,
             procedural_hdr: cfg!(target_os = "horizon"),
             procedural_tonemapping: Tonemapping::TonyMcMapface,
-            procedural_character: false,
+            procedural_character: None,
             upscale: Upscale::Rcas,
             present_to_window: true,
             occlusion: false,
@@ -737,8 +740,11 @@ impl RenderOptions {
                 Some(name) if name.eq_ignore_ascii_case("tony") => Tonemapping::TonyMcMapface,
                 _ => defaults.procedural_tonemapping,
             };
-        let procedural_character =
-            flag("SKATE_PROCEDURAL_CHARACTER", defaults.procedural_character);
+        let procedural_character = match var("SKATE_PROCEDURAL_CHARACTER").as_deref().map(str::trim) {
+            Some("1" | "true" | "on") => Some(true),
+            Some("0" | "false" | "off") => Some(false),
+            _ => defaults.procedural_character,
+        };
         let upscale = match var("SKATE_UPSCALE").as_deref().map(str::trim) {
             Some(name) if name.eq_ignore_ascii_case("rcas") => Upscale::Rcas,
             Some(name) if name.eq_ignore_ascii_case("easu") => Upscale::Easu,

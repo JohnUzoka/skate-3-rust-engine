@@ -20,7 +20,8 @@ impl Plugin for CharacterLightingPlugin {
         let common: Handle<Shader> = bevy::asset::load_embedded_asset!(app.world().resource::<AssetServer>(), "retail_character_common.wgsl");
         app.insert_resource(CharacterShader(common));
         app.add_plugins(MaterialPlugin::<CharacterMaterial>::default())
-            .add_systems(Startup, load)
+            // After the scene build (world.rs `spawn`), so the lights `load` counts are there.
+            .add_systems(Startup, load.after(crate::world::spawn))
             .add_systems(PreUpdate, load.after(crate::map_transition::MapTransitionSet).run_if(crate::retail_render::world_changed))
             .add_systems(Update, (bind, shadow_views).chain())
             .add_systems(
@@ -140,6 +141,7 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Que
     originals: Query<(Entity, &OriginalCharacterMaterial)>,
     cameras: Query<(Entity, &RenderLayers), With<crate::camera::GameplayCamera>>,
     mut customiser: ResMut<Assets<crate::customiser_material::SkaterMaterial>>,
+    lights: Query<(), (Or<(With<DirectionalLight>, With<PointLight>, With<SpotLight>)>, Without<ShadowSource>)>,
 ) {
     for (_, material) in customiser.iter_mut() { material.extension.retail.light = Vec4::ZERO; }
     commands.remove_resource::<Lighting>();
@@ -161,21 +163,34 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Que
         commands.entity(entity).try_insert(layers.clone().without(28));
     }
     if !retail.0 {
-        // `SKATE_PROCEDURAL_CHARACTER=1` (render_options.rs): the skater takes the character
-        // shader here too, with only the default probe, a sun overhead and no shadow sources.
-        if options.is_some_and(|options| options.procedural_character) {
-            match read_lighting_data(&config.asset_root) {
-                Ok(data) => {
-                    info!("SKATE_CHARACTER_LIGHTING: no retail map, so the skater is lit by the default probe and a sun overhead");
-                    commands.insert_resource(Lighting {
-                        data,
-                        probes: Irradiance::default(),
-                        light: PROCEDURAL_LIGHT,
-                        display_sh: None,
-                    });
-                }
-                Err(e) => warn!("SKATE_CHARACTER_LIGHTING: {e}"),
+        // `SKATE_PROCEDURAL_CHARACTER` (render_options.rs): unset, the skater takes the character
+        // shader when the scene has no light of its own, where Bevy's lit material would have
+        // only the ambient light. It gets the default probe, a sun overhead and no shadow sources.
+        // The retail suns despawned above are still in the world until the commands apply, so
+        // `lights` leaves them out.
+        let setting = options.as_ref().and_then(|options| options.procedural_character);
+        let lit = !lights.is_empty();
+        let why = match setting {
+            Some(true) => "SKATE_PROCEDURAL_CHARACTER=1",
+            Some(false) => "SKATE_PROCEDURAL_CHARACTER=0",
+            None if lit => "the scene has a light of its own",
+            None => "the scene has no light of its own",
+        };
+        if !setting.unwrap_or(!lit) {
+            info!("SKATE_CHARACTER_LIGHTING: no retail map, and {why}, so the skater keeps Bevy's lit material");
+            return;
+        }
+        match read_lighting_data(&config.asset_root) {
+            Ok(data) => {
+                info!("SKATE_CHARACTER_LIGHTING: no retail map, and {why}, so the skater takes the character shader, lit by the default probe and a sun overhead");
+                commands.insert_resource(Lighting {
+                    data,
+                    probes: Irradiance::default(),
+                    light: PROCEDURAL_LIGHT,
+                    display_sh: None,
+                });
             }
+            Err(e) => warn!("SKATE_CHARACTER_LIGHTING: {e}"),
         }
         return;
     }
