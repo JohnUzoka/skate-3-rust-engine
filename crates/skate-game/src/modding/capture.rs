@@ -104,11 +104,12 @@ pub(super) fn set(
             RenderTarget::Image(handle.clone().into()),
             Msaa::Off,
         ));
+        entity.insert(env.tonemapping);
         if env.hdr {
-            entity.insert((Hdr, bevy::core_pipeline::tonemapping::Tonemapping::None));
-            if let Some(tone) = env.tone {
-                entity.insert(tone);
-            }
+            entity.insert(Hdr);
+        }
+        if let Some(tone) = env.tone {
+            entity.insert(tone);
         }
         entity.insert(env.layers.unwrap_or_default().without(SCREEN_LAYER));
         let id = entity.id();
@@ -162,6 +163,7 @@ pub(super) fn clear(world: &mut World) {
 
 struct GameplayEnv {
     hdr: bool,
+    tonemapping: bevy::core_pipeline::tonemapping::Tonemapping,
     tone: Option<crate::retail_render::RetailTone>,
     layers: Option<RenderLayers>,
 }
@@ -169,18 +171,21 @@ struct GameplayEnv {
 fn gameplay_environment(world: &mut World) -> GameplayEnv {
     let mut query = world.query_filtered::<(
         Option<&Hdr>,
+        Option<&bevy::core_pipeline::tonemapping::Tonemapping>,
         Option<&crate::retail_render::RetailTone>,
         Option<&RenderLayers>,
     ), With<crate::camera::GameplayCamera>>();
-    let Some((hdr, tone, layers)) = query.iter(world).next() else {
+    let Some((hdr, tonemapping, tone, layers)) = query.iter(world).next() else {
         return GameplayEnv {
             hdr: false,
+            tonemapping: default(),
             tone: None,
             layers: None,
         };
     };
     GameplayEnv {
         hdr: hdr.is_some(),
+        tonemapping: tonemapping.copied().unwrap_or_default(),
         tone: tone.copied(),
         layers: layers.cloned(),
     }

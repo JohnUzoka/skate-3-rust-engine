@@ -1,10 +1,10 @@
 //! Rendering trade-offs chosen at launch from environment variables. On the Switch they are
 //! `env` lines in `options.txt` (horizon.rs). Unset, each one renders as the game did before it
-//! existed, except the depth prepass, which the Switch draws unless told not to, and the world
-//! variants `SKATE_WORLD_TRIM`, `SKATE_WORLD_PACKED` and `SKATE_CUTOUT_FLAT`, the shadow skips
-//! `SKATE_SHADOW_BOUNDS`, `SKATE_SUN_RECEIVERS`, `SKATE_SUN_SCISSOR` and `SKATE_CASCADE_SKIP`,
-//! `SKATE_PREPASS_DEPTH_COPY`, `SKATE_HUD_RETAIN`, `SKATE_PRESENT_DIRECT` and
-//! `SKATE_TONE_DIRECT`, which draw the same pixels.
+//! existed, except the depth prepass and `SKATE_PROCEDURAL_HDR`, which the Switch turns on unless
+//! told not to, and the world variants `SKATE_WORLD_TRIM`,
+//! `SKATE_WORLD_PACKED` and `SKATE_CUTOUT_FLAT`, the shadow skips `SKATE_SHADOW_BOUNDS`,
+//! `SKATE_SUN_RECEIVERS`, `SKATE_SUN_SCISSOR` and `SKATE_CASCADE_SKIP`, `SKATE_PREPASS_DEPTH_COPY`,
+//! `SKATE_HUD_RETAIN`, `SKATE_PRESENT_DIRECT` and `SKATE_TONE_DIRECT`, which draw the same pixels.
 //!
 //! - `SKATE_DEPTH_PREPASS=1`: draw the depth of every opaque mesh first (Bevy's `DepthPrepass` on
 //!   the gameplay camera), so the main pass shades only the front surface of each pixel instead
@@ -121,6 +121,21 @@
 //!   either can differ in the last bit. It needs a window whose texture is `Rgba8Unorm` viewed
 //!   as sRGB, as the Switch's is; elsewhere the tone pass converts as it does with 0
 //!   (retail_exposure.rs `ExposureNode`).
+//! - `SKATE_PROCEDURAL_HDR=0`: a scene without a retail map (a custom map, or the test world) is
+//!   drawn through the 8-bit camera Bevy gives it, which tonemaps in each material's shader, as
+//!   before. Unset, the Switch draws it through an HDR camera, as it draws a retail map, and
+//!   Bevy tonemaps it in a pass of its own (camera.rs `set_world_environment`). With the skater
+//!   hidden, Kenney Park and a one-draw custom map ran on the Switch that way. Elsewhere it's off
+//!   unless set to 1.
+//! - `SKATE_PROCEDURAL_TONEMAPPING=none|aces|tony`: Bevy's tonemapping for such a scene: none,
+//!   ACES fitted, or TonyMcMapface, which reads a 3D lookup table and is Bevy's default and the
+//!   default here.
+//! - `SKATE_PROCEDURAL_CHARACTER=1`: on such a scene the skater is shaded as on a retail map, with
+//!   the character shader (retail_character.rs `load`), lit by `character-lighting.json`'s
+//!   default probe and a sun overhead. Unset, it keeps the `StandardMaterial`s it was made with,
+//!   lit by Bevy. The Switch turned it on while Bevy's lit `StandardMaterial` lost the GPU within
+//!   a few frames wherever it drew (findings 55 and 59); bevy-horizon's Mesa patch 0032
+//!   (`NAK_DEBUG=hzero`) fixed that.
 //! - `SKATE_OCCLUSION=1`: Bevy's GPU occlusion culling on the gameplay camera (`OcclusionCulling`,
 //!   which Bevy ignores without the depth prepass). The prepass first draws the meshes that were
 //!   visible the frame before and reduces their depth to a pyramid of smaller and smaller images,
@@ -441,6 +456,7 @@
 use bevy::camera::primitives::Aabb;
 use bevy::camera::visibility::VisibilitySystems;
 use bevy::core_pipeline::prepass::{DepthPrepass, SkipPrepassDepthCopy};
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::light::{
     CascadeShadowConfig, CascadeShadowConfigBuilder, NotShadowCaster, ShadowFilteringMethod,
 };
@@ -488,6 +504,14 @@ pub(crate) struct RenderOptions {
     /// `SKATE_TONE_GAMMA`: while the tone pass writes the window, it writes the curve's 8-bit
     /// values through a view that doesn't encode sRGB.
     pub tone_gamma: bool,
+    /// `SKATE_PROCEDURAL_HDR`: a scene without a retail map is drawn through an HDR camera, and
+    /// Bevy tonemaps it in a pass of its own rather than in each material's shader.
+    pub procedural_hdr: bool,
+    /// `SKATE_PROCEDURAL_TONEMAPPING`: Bevy's tonemapping for a scene without a retail map.
+    pub procedural_tonemapping: Tonemapping,
+    /// `SKATE_PROCEDURAL_CHARACTER`: on a scene without a retail map, the skater is shaded by the
+    /// character shader retail maps use, not Bevy's lit `StandardMaterial`.
+    pub procedural_character: bool,
     /// `SKATE_UPSCALE`: how the scene image is stretched to the window below 100% scale.
     pub upscale: Upscale,
     /// `SKATE_PRESENT_TO_WINDOW`: the presentation camera draws the image and the UI into the
@@ -546,6 +570,9 @@ impl Default for RenderOptions {
             present_direct: true,
             tone_direct: true,
             tone_gamma: true,
+            procedural_hdr: cfg!(target_os = "horizon"),
+            procedural_tonemapping: Tonemapping::TonyMcMapface,
+            procedural_character: false,
             upscale: Upscale::Rcas,
             present_to_window: true,
             occlusion: false,
@@ -702,6 +729,16 @@ impl RenderOptions {
         let present_direct = flag("SKATE_PRESENT_DIRECT", defaults.present_direct);
         let tone_direct = flag("SKATE_TONE_DIRECT", defaults.tone_direct);
         let tone_gamma = flag("SKATE_TONE_GAMMA", defaults.tone_gamma);
+        let procedural_hdr = flag("SKATE_PROCEDURAL_HDR", defaults.procedural_hdr);
+        let procedural_tonemapping =
+            match var("SKATE_PROCEDURAL_TONEMAPPING").as_deref().map(str::trim) {
+                Some(name) if name.eq_ignore_ascii_case("none") => Tonemapping::None,
+                Some(name) if name.eq_ignore_ascii_case("aces") => Tonemapping::AcesFitted,
+                Some(name) if name.eq_ignore_ascii_case("tony") => Tonemapping::TonyMcMapface,
+                _ => defaults.procedural_tonemapping,
+            };
+        let procedural_character =
+            flag("SKATE_PROCEDURAL_CHARACTER", defaults.procedural_character);
         let upscale = match var("SKATE_UPSCALE").as_deref().map(str::trim) {
             Some(name) if name.eq_ignore_ascii_case("rcas") => Upscale::Rcas,
             Some(name) if name.eq_ignore_ascii_case("easu") => Upscale::Easu,
@@ -825,6 +862,9 @@ impl RenderOptions {
             present_direct,
             tone_direct,
             tone_gamma,
+            procedural_hdr,
+            procedural_tonemapping,
+            procedural_character,
             upscale,
             present_to_window,
             occlusion,

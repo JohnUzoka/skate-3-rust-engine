@@ -130,8 +130,13 @@ struct OriginalCharacterMaterial {
     material: Handle<StandardMaterial>,
     layers: Option<RenderLayers>,
 }
+/// What lights the skater on a map without retail lighting (`SKATE_PROCEDURAL_CHARACTER`): a sun
+/// straight overhead, at the exposure the retail scenes' character light has.
+const PROCEDURAL_LIGHT: Vec4 = Vec4::new(0., 1., 0., 2.5);
+
 fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Query<Entity, With<ShadowSource>>, mut shadow: ResMut<crate::retail_render::FrameStateData>,
     retail: Res<crate::retail_render::RetailScene>,
+    options: Option<Res<crate::render_options::RenderOptions>>,
     originals: Query<(Entity, &OriginalCharacterMaterial)>,
     cameras: Query<(Entity, &RenderLayers), With<crate::camera::GameplayCamera>>,
     mut customiser: ResMut<Assets<crate::customiser_material::SkaterMaterial>>,
@@ -155,23 +160,35 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Que
     for (entity, layers) in &cameras {
         commands.entity(entity).try_insert(layers.clone().without(28));
     }
-    if !retail.0 { return; }
+    if !retail.0 {
+        // `SKATE_PROCEDURAL_CHARACTER=1` (render_options.rs): the skater takes the character
+        // shader here too, with only the default probe, a sun overhead and no shadow sources.
+        if options.is_some_and(|options| options.procedural_character) {
+            match read_lighting_data(&config.asset_root) {
+                Ok(data) => {
+                    info!("SKATE_CHARACTER_LIGHTING: no retail map, so the skater is lit by the default probe and a sun overhead");
+                    commands.insert_resource(Lighting {
+                        data,
+                        probes: Irradiance::default(),
+                        light: PROCEDURAL_LIGHT,
+                        display_sh: None,
+                    });
+                }
+                Err(e) => warn!("SKATE_CHARACTER_LIGHTING: {e}"),
+            }
+        }
+        return;
+    }
     let Some(map_path) = &config.map_path else {
         return;
     };
-    let path = config.asset_root.join("private/character-lighting.json");
-    let mut data = match std::fs::read(&path)
-        .map_err(|e| e.to_string())
-        .and_then(|b| serde_json::from_slice::<LightingData>(&b).map_err(|e| e.to_string()))
-    {
+    let data = match read_lighting_data(&config.asset_root) {
         Ok(data) => data,
         Err(e) => {
             warn!("SKATE_CHARACTER_LIGHTING: {e}");
             return;
         }
     };
-    data.native = std::fs::read(crate::customiser_parts::asset_directory(&config.asset_root).join("native-lighting.json"))
-        .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let name = map_path.file_stem().unwrap_or_default().to_string_lossy();
     let overlay = config
         .asset_root
@@ -227,6 +244,15 @@ fn load(mut commands: Commands, config: Res<crate::config::Config>, sources: Que
         light,
         display_sh: None,
     });
+}
+/// `character-lighting.json`, with the native models' tables from `native-lighting.json` if any.
+fn read_lighting_data(root: &std::path::Path) -> Result<LightingData, String> {
+    let mut data = std::fs::read(root.join("private/character-lighting.json"))
+        .map_err(|e| e.to_string())
+        .and_then(|b| serde_json::from_slice::<LightingData>(&b).map_err(|e| e.to_string()))?;
+    data.native = std::fs::read(crate::customiser_parts::asset_directory(root).join("native-lighting.json"))
+        .ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    Ok(data)
 }
 fn spawn_shadow_sources(commands: &mut Commands, light: Vec3) {
     // Scene sun for authored PBR materials, plus all-caster shadow visibility

@@ -37,7 +37,8 @@ impl Plugin for CameraPlugin {
             .add_systems(Update, present.after(FrameSet::Animation).before(FrameSet::Verification));
     }
 }
-fn spawn(mut commands: Commands, config: Res<Config>, retail: Res<crate::retail_render::RetailScene>) {
+fn spawn(mut commands: Commands, config: Res<Config>, retail: Res<crate::retail_render::RetailScene>,
+    options: Option<Res<crate::render_options::RenderOptions>>) {
     let runtime = CameraRuntime::load(&config.asset_root)
         .unwrap_or_else(|error| panic!("Cannot initialize normal gameplay camera: {error}"));
     commands.insert_resource(runtime);
@@ -51,6 +52,12 @@ fn spawn(mut commands: Commands, config: Res<Config>, retail: Res<crate::retail_
     if retail.0 {
         camera.insert((bevy::render::view::Hdr, bevy::core_pipeline::tonemapping::Tonemapping::None,
             crate::retail_render::RetailTone::default()));
+    } else {
+        let options = options.map_or_else(crate::render_options::RenderOptions::default, |o| *o);
+        camera.insert(options.procedural_tonemapping);
+        if options.procedural_hdr {
+            camera.insert(bevy::render::view::Hdr);
+        }
     }
 }
 
@@ -61,10 +68,8 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
     config: Option<Res<Config>>, current: Option<Res<crate::map_transition::CurrentMap>>,
     mut cameras: Query<(&mut Camera, &mut Transform, &mut Projection), With<GameplayCamera>>) {
     // Off while the Switch's start map loads behind the loading screen: there is nothing to draw
-    // yet, and until a retail map commits this isn't the HDR camera it gets then. Drawing the
-    // skater through the non-HDR lit path lost the Switch's GPU 11–19 s after the first frame, as
-    // the test world does (findings 55, 59). Switched off here, not just left alone: the menu's
-    // setup replaces its `Camera` with one that is on.
+    // yet. Switched off here, not just left alone: the menu's setup replaces its `Camera` with one
+    // that is on.
     if config.is_some_and(|c| c.boot_map.is_some()) && current.is_none_or(|c| c.generation == 0) {
         for (mut camera, ..) in &mut cameras {
             if camera.is_active {
@@ -108,8 +113,13 @@ pub(crate) fn present(mut runtime: ResMut<CameraRuntime>, windows: Query<&Window
 }
 
 /// Keep the presentation camera/target/settings while replacing world-specific
-/// postprocessing. A procedural scene must not inherit native HDR/tone state.
+/// postprocessing. A procedural scene must not inherit the retail tone; it keeps HDR only when
+/// `RenderOptions::procedural_hdr` says so (render_options.rs `SKATE_PROCEDURAL_HDR`).
 pub(crate) fn set_world_environment(world: &mut World, retail: bool) {
+    let options = world
+        .get_resource::<crate::render_options::RenderOptions>()
+        .copied()
+        .unwrap_or_default();
     let cameras: Vec<_> = world.query_filtered::<Entity, With<GameplayCamera>>().iter(world).collect();
     for id in cameras {
         let mut camera = world.entity_mut(id);
@@ -117,11 +127,24 @@ pub(crate) fn set_world_environment(world: &mut World, retail: bool) {
             camera.insert((bevy::render::view::Hdr, bevy::core_pipeline::tonemapping::Tonemapping::None,
                 crate::retail_render::RetailTone::default()));
         } else {
-            camera.remove::<(bevy::render::view::Hdr, crate::retail_render::RetailTone)>();
-            camera.insert(bevy::core_pipeline::tonemapping::Tonemapping::default());
+            camera.remove::<crate::retail_render::RetailTone>();
+            camera.insert(options.procedural_tonemapping);
+            if options.procedural_hdr {
+                camera.insert(bevy::render::view::Hdr);
+            } else {
+                camera.remove::<bevy::render::view::Hdr>();
+            }
         }
         camera.get_mut::<Camera>().unwrap().is_active = false;
         *camera.get_mut::<Transform>().unwrap() = Transform::default();
+    }
+    if !retail {
+        info!(
+            "[Skate] camera: a scene without a retail map, through {}, tonemapping {:?} {}",
+            if options.procedural_hdr { "an HDR camera" } else { "an 8-bit camera" },
+            options.procedural_tonemapping,
+            if options.procedural_hdr { "in a pass of its own" } else { "in each material's shader" },
+        );
     }
 }
 
