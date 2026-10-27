@@ -1,9 +1,11 @@
 //! Installed map discovery and the default pointer, shared by startup and the menu.
 //!
-//! The Switch build has no test world: every run of it there hung the GPU (findings 22 §2.3 and
-//! 55), and that investigation is parked. The menu does not offer it, an unset default starts an
-//! installed map instead, with no map installed the game stops with an error, `--test-world` is
-//! an error and `SKATE_TEST_WORLD=1` is ignored. `SWITCH_TEST_WORLD` brings it back for a test.
+//! On the Switch the test world is opt-in: every run of it there hung the GPU (findings 22 §2.3
+//! and 55) until bevy-horizon's Mesa patch 0032 (`NAK_DEBUG=hzero`). The menu offers it, and an
+//! unset default starts it, only with `SKATE_TEST_WORLD=1`; otherwise an unset default starts an
+//! installed map, and with no map installed the game stops with an error. `SWITCH_TEST_WORLD`
+//! false takes the opt-in away too: `--test-world` is then an error and `SKATE_TEST_WORLD=1` is
+//! ignored.
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -15,7 +17,7 @@ pub(crate) struct Entry {
 /// Whether the Switch build can start the test world. `true` brings back the opt-in the hang
 /// investigation used: `SKATE_TEST_WORLD=1` (an `env` line in options.txt) starts on it, and the
 /// menu then offers it. Without that line the Switch still hides it.
-const SWITCH_TEST_WORLD: bool = false;
+const SWITCH_TEST_WORLD: bool = true;
 
 /// Whether this build can start the test world at all: everywhere but the Switch
 /// (`SWITCH_TEST_WORLD`).

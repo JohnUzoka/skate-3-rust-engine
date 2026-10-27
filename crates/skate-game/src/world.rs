@@ -20,8 +20,8 @@ impl Plugin for WorldPlugin {
 /// The scene build (Startup). Audio `setup` runs before it, so the start-up banks load meanwhile.
 ///
 /// With a `Config::boot_map` the scene starts empty and the map loader reads the map behind the
-/// loading screen, as a map change does. Empty, not the scene for no map: that is the test world,
-/// which hangs the Switch's GPU (map_library.rs).
+/// loading screen, as a map change does. Empty, not the scene for no map, which is the test world:
+/// it would only be thrown away when the map commits.
 pub(crate) fn spawn(world: &mut World) {
     let scene = {
         let server = world.resource::<AssetServer>();
@@ -52,10 +52,11 @@ pub(crate) fn spawn(world: &mut World) {
 }
 
 /// The ground the physics knows, drawn plainly, and a sun. Three switches, read as it spawns,
-/// look for what hangs the Switch's GPU here (findings 22 §2.3): `SKATE_TEST_WORLD_SHADOWS=0`
-/// turns the sun's shadows off, `SKATE_TEST_WORLD_INDEXED=1` gives the ground indices, and
-/// `SKATE_TEST_WORLD_UNLIT=1` draws the ground unlit. Until that is found the Switch starts here
-/// only with `SKATE_TEST_WORLD=1` (map_library.rs).
+/// were for finding what hung the Switch's GPU here (findings 22 §2.3); it was the light loops of
+/// Bevy's lit shader in a fragment shader's helper lanes, which bevy-horizon's Mesa patch 0032
+/// fixed. `SKATE_TEST_WORLD_SHADOWS=0` turns the sun's shadows off, `SKATE_TEST_WORLD_INDEXED=1`
+/// gives the ground indices, and `SKATE_TEST_WORLD_UNLIT=1` draws the ground unlit. The Switch
+/// starts here only with `SKATE_TEST_WORLD=1` (map_library.rs).
 pub(crate) fn spawn_test_world(
     commands: &mut crate::map_render::SceneCommands,
     meshes: &mut impl crate::map_render::AssetSink<Mesh>,
