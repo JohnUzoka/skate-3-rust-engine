@@ -1,0 +1,20 @@
+[package]
+name = "skate-switch-update"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+# Links the system's libcurl, so the downloads also run on a PC (examples/check.rs). The Switch
+# build always links devkitPro's switch-curl (build.rs).
+system-curl = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+semver = "1.0.28"
+sha2 = { version = "0.10.9", default-features = false }
+
+[[example]]
+name = "check"
+required-features = ["system-curl"]

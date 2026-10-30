@@ -1,0 +1,13 @@
+{
+  "pc_build": "experimental build 49",
+  "pc_revision": "2e16697",
+  "asset_pipelines": {
+    "core": "20919f4c609774eb237a63e58e71f496f33693e77bade75eb2a0df85e7ea8fd9",
+    "hud": "c227d4f752623041bdc0ffc85128cb0edf330404926641b17a87497bc788e489",
+    "character": "81b36c445f8e234757cc8ee4c3f41a11ad59e620b0d155961c974e7809f9d886",
+    "environment": "9ab9fead34bbd38aaa9862bbd595472a7e3842ab7687c3da6fbd4829016cb5b2",
+    "maps": "af44d7f0d14c6252c862a39ac60d9073a4bef17b7783623657c5201178096abc",
+    "audio": "ad1b17df24d8d6fce5be5f9ad0d9ef35fc42701acf9e7171c6237371233e3da3"
+  },
+  "pipeline_equivalence": {}
+}
