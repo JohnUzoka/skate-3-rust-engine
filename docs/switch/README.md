@@ -181,7 +181,9 @@ python3 tools/switch_release.py target/aarch64-nintendo-horizon/release/skate3ru
 
 It stops if the NRO doesn't show that version. Publish a release tagged `switch-v0.1.5`,
 not marked as a pre-release, with the ZIP, `skate3rust.nro` and `switch-release.json`. A
-release without the last two is never offered. The ZIP needs `tools/switch_assets.json`
+release without the last two is never offered. The Switch shows the first line of the
+release notes under the Updates row, so start them with a one-line summary rather than a
+title. The ZIP needs `tools/switch_assets.json`
 beside `switch_export.py`, which reads it, and libcurl's license with the others: the NRO
 links devkitPro's libcurl. Then, from Linux with libcurl's development files, see what
 players on the previous version are offered (`--install <folder>` downloads it too, with
