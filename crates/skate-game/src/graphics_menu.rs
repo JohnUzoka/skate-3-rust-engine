@@ -1127,7 +1127,7 @@ fn labels(
     mut headings: Query<(&mut Text, Has<MenuTitle>), (Or<(With<MenuTitle>, With<MenuSubtitle>)>, Without<StatusLabel>)>,
     mut status: Single<&mut Text, With<StatusLabel>>,
     debug: (Res<crate::modding::Mods>, Res<crate::physics::GamePhysics>, Res<crate::multiplayer::appearance::Appearances>, Res<crate::input::ControllerInput>),
-    (audio, camera_angle): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>),
+    (audio, camera_angle, updater): (Option<Res<crate::game_audio::AudioSettings>>, Res<crate::camera::CameraAngleSettings>, Res<crate::updater::Updater>),
     mut buttons: Query<(&MenuRow, &Interaction, &mut BackgroundColor, &mut Node), Without<MenuRoot>>,
 ) {
     // Only on change: Bevy counts every write as one, and lays the UI out again (findings 63 §6.2).
@@ -1275,7 +1275,7 @@ fn labels(
                 7 => "Quit game".into(),
                 8 => "Character customiser".into(),
                 10 => "Custom models".into(),
-                11 => "Updates".into(),
+                11 => updater.label(),
                 12 => "Teleport".into(),
                 13 => "Day & night".into(),
                 14 => "Mods".into(),
@@ -1305,6 +1305,9 @@ fn labels(
     } else if menu.items_focused() && menu.section == 1 && menu.difficulty == Difficulty::Custom && (300..335).contains(&menu.selected) {
         format!("{}\n{}", OPTIONS[menu.selected-300].description,
             if menu.custom_dirty {"Changes pending - select Apply custom tuning below. Left/Right adjusts; drag bars with the mouse."} else {"Left/Right adjusts; drag bars with the mouse. Custom starts from Easy."})
+    } else if let Some(text) = (menu.items_focused() && menu.section == 4 && menu.selected == 11).then(|| updater.status()).flatten() {
+        // EXTRAS' Updates row: what the Switch's updater is doing, live.
+        text
     } else {
         menu.status.clone()
     };

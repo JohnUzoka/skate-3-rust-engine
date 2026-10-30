@@ -2,7 +2,9 @@
 //! docs/porting-a-bevy-game.md). Everything the game does differently on Horizon starts here.
 //!
 //! The SD card layout, beside the NRO:
-//! - `sdmc:/switch/skate3rust/skate3rust.nro`
+//! - `sdmc:/switch/skate3rust/skate3rust.nro`; during an update, also
+//!   `skate3rust.nro.update.tmp` (the download) and `skate3rust.nro.update.old` (the version it
+//!   replaced, until the next start: updater/switch.rs)
 //! - `sdmc:/switch/skate3rust/assets/`: what `SKATE3_ASSETS` names on a PC
 //! - `sdmc:/switch/skate3rust/mods/`: `SKATE3_MODS`
 //! - `sdmc:/switch/skate3rust/log.txt`: stdout, stderr and the tracing log, rewritten each launch
@@ -32,6 +34,8 @@
 //!     and perf27's 2 s lines made frames of 62-70 ms (findings 47). The lines while the map
 //!     loads still print
 //!   - `no_memory_log`: the default; it wins over `memory_log`
+//!   - `no_update_check`: don't ask GitHub for a newer version at start-up; the pause menu's
+//!     Updates row still looks when selected (updater/switch.rs)
 //!   - `env NAME=value`: sets the environment variable `NAME` before the game starts, for what a
 //!     PC reads from its environment: `SKATE_PERF_REPORT` and the rest of performance.rs (not
 //!     `SKATE_TEST_WORLD=1`: the Switch build has no test world, map_library.rs), the rendering
@@ -115,6 +119,11 @@ pub(crate) fn rgba_pages() -> bool {
     option("rgba_pages")
 }
 
+/// Whether to ask GitHub for a newer version at start-up (`no_update_check`, top of file).
+pub(crate) fn update_check_at_start() -> bool {
+    !option("no_update_check")
+}
+
 /// Runs first in `main`, before anything reads the environment or the SD card.
 pub(crate) fn init() {
     bevy_horizon::init_switch_logging("skate3rust");
@@ -155,6 +164,8 @@ pub(crate) fn init() {
         .map(|(name, _)| format!("{name}={}", std::env::var(name).unwrap_or_default()))
         .collect();
     eprintln!("[Skate] release options, after options.txt: {}", release.join(" "));
+    // Before the App: an update cut short leaves files beside the NRO for this to tidy up.
+    crate::updater::recover();
 }
 
 /// Changes `DefaultPlugins` for the Switch.

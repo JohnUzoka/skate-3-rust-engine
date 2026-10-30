@@ -34,6 +34,11 @@ fn main() {
     let compiler = Command::new(env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())).arg("--version").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
     println!("cargo:rustc-env=SKATE_BUILD_ID={} revision={} dirty={dirty:?} build_unix_ns={stamp} target={} profile={} dynamic={} compiler={compiler}", env::var("CARGO_PKG_VERSION").unwrap(), revision, env::var("TARGET").unwrap(), env::var("PROFILE").unwrap(), env::var_os("CARGO_FEATURE_DEV_DYNAMIC").is_some());
+    // bevy-horizon's build_game.sh passes its VERSION, the version the NACP shows, as
+    // NRO_VERSION; the Switch updater compares releases with it (updater/switch.rs). Empty for
+    // builds made without VERSION, which then don't update.
+    println!("cargo:rerun-if-env-changed=NRO_VERSION");
+    println!("cargo:rustc-env=SKATE_SWITCH_VERSION={}", env::var("NRO_VERSION").unwrap_or_default());
     println!("cargo:rerun-if-changed=../../docs/images/skating-crab.ico");
     println!("cargo:rerun-if-env-changed=RC");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {

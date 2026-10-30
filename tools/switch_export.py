@@ -9,7 +9,8 @@ and reached its menu. The SD card is its root (E:\\ on Windows, /media/... elsew
 folder that stands for one, such as an emulator's. Files land in <SD card>/switch/skate3rust/:
 assets/, maps/, maps.json and settings/, and skate3rust.nro when it sits beside this script.
 The PC's settings/graphics.json is left out: the Switch keeps its own. Running it again copies
-only what changed. Python 3.8 or later, nothing else.
+only what changed. switch_assets.json, beside this script, names the PC build whose files the
+Switch build reads. Python 3.8 or later, nothing else.
 """
 import argparse
 import json
@@ -19,17 +20,9 @@ import shutil
 import sys
 from pathlib import Path
 
-# The asset recipes the Switch build reads: PC experimental build 49's release.json, made from
-# the same source revision (2e16697).
-SWITCH_PIPELINES = {
-    'core': '20919f4c609774eb237a63e58e71f496f33693e77bade75eb2a0df85e7ea8fd9',
-    'hud': 'c227d4f752623041bdc0ffc85128cb0edf330404926641b17a87497bc788e489',
-    'character': '81b36c445f8e234757cc8ee4c3f41a11ad59e620b0d155961c974e7809f9d886',
-    'environment': '9ab9fead34bbd38aaa9862bbd595472a7e3842ab7687c3da6fbd4829016cb5b2',
-    'maps': 'af44d7f0d14c6252c862a39ac60d9073a4bef17b7783623657c5201178096abc',
-    'audio': 'ad1b17df24d8d6fce5be5f9ad0d9ef35fc42701acf9e7171c6237371233e3da3',
-}
-PC_BUILD = 'experimental build 49'
+# The asset set the Switch build reads: the asset pipelines of the PC build it was made and tested
+# with, which its NRO has built in too. Its updater installs only releases that read the same set.
+ASSETS = Path(__file__).resolve().with_name('switch_assets.json')
 TARGET = Path('switch', 'skate3rust')
 NRO = 'skate3rust.nro'
 LEFT_OUT = {Path('settings', 'graphics.json')}
@@ -90,6 +83,10 @@ def unready_groups(marker, root, release):
 
 
 def check(folder):
+    switch = read_json(ASSETS)
+    if not isinstance(switch, dict) or not isinstance(switch.get('asset_pipelines'), dict):
+        sys.exit(f'error: {ASSETS} is missing or unreadable; it comes with this script')
+    pc_build = switch.get('pc_build', '?')
     base, root, marker = installation(folder)
     print(f'PC installation: {root}')
     problems = []
@@ -101,19 +98,19 @@ def check(folder):
     release = read_json(base.parent / 'release.json')
     if release is None:
         print(f'  note: no release.json beside data/, so the PC build is unknown; this Switch '
-              f'build matches PC {PC_BUILD}')
+              f'build matches PC {pc_build}')
     else:
         groups = unready_groups(marker, root, release)
         if groups:
             problems.append(f'the PC game still has to set up: {", ".join(groups)}')
-        different = sorted(group for group, value in SWITCH_PIPELINES.items()
+        different = sorted(group for group, value in switch['asset_pipelines'].items()
                            if (release.get('asset_pipelines') or {}).get(group) != value)
         print(f'  PC build {release.get("build", "?")} ({release.get("tag", "?")}), '
               f'revision {str(release.get("revision", "?"))[:7]}')
         if different:
             print(f'  warning: this PC build prepares {", ".join(different)} differently from PC '
-                  f'{PC_BUILD}, which this Switch build matches. If the Switch build fails to '
-                  f'start or looks wrong, set up with PC {PC_BUILD}.')
+                  f'{pc_build}, which this Switch build matches. If the Switch build fails to '
+                  f'start or looks wrong, set up with PC {pc_build}.')
     if problems:
         sys.exit('error: the PC setup isn\'t finished:\n  - ' + '\n  - '.join(problems) +
                  '\nStart the PC game and let it reach its menu, then run this again.')

@@ -75,6 +75,8 @@ bevy = { workspace = true, features = [
 # from, so the scene data freed after loading leaves runs the GPU can use, and freed blocks of up to
 # 32 KiB stay in a cache instead of queueing for malloc's lock (bevy-horizon allocator.rs).
 bevy_horizon = { path = "../../../bevy-horizon/crates/bevy_horizon", default-features = false, features = ["bevy_0_18", "vulkan", "render_0_18", "top_down_alloc"] }
+# Over-the-air updates from this repository's Switch releases (updater/switch.rs).
+skate-switch-update = { path = "../skate-switch-update" }
 
 [dev-dependencies]
 naga = { version = "=27.0.3", features = ["wgsl-in"] }

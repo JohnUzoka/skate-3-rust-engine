@@ -77,7 +77,8 @@ fn main() -> bevy::app::AppExit {
     // After `init`, which reads options.txt's `env` lines (SKATE_EARLY_SPLASH).
     #[cfg(target_os = "horizon")]
     loading_screen::show_early_splash();
-    // The Switch has no updater or setup tools, and runs one process: no crash-reporting supervisor.
+    // The Switch has no setup tools and runs one process, so no crash-reporting supervisor; its
+    // updater tidies up after an interrupted update in `horizon::init`.
     #[cfg(not(target_os = "horizon"))]
     {
         match updater::recover() {

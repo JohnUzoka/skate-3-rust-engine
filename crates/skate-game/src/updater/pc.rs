@@ -64,6 +64,17 @@ impl Updater {
             Err(error) => error,
         }
     }
+
+    /// The menu row's text.
+    pub(crate) fn label(&self) -> String {
+        "Updates".into()
+    }
+
+    /// Live text for the menu's status line on the Updates row: none, as the helper's window has
+    /// it, so the line keeps what `open` returned.
+    pub(crate) fn status(&self) -> Option<String> {
+        None
+    }
 }
 
 pub(crate) struct UpdaterPlugin;
