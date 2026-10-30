@@ -16,6 +16,8 @@ pub(crate) struct Updater {
     updater: Result<skate_switch_update::Updater, String>,
     /// Set when the player asks to restart into an installed update; `poll` does it.
     restart: bool,
+    /// The last step `poll` wrote to the log.
+    logged: String,
 }
 
 impl Default for Updater {
@@ -25,7 +27,7 @@ impl Default for Updater {
         if let Err(why) = &updater {
             info!("[Update] updates are off: {why}");
         }
-        Self { updater, restart: false }
+        Self { updater, restart: false, logged: String::new() }
     }
 }
 
@@ -155,12 +157,17 @@ impl Plugin for UpdaterPlugin {
     }
 }
 
-/// Gives a finished check's or download's thread back, and restarts into an installed update
-/// when the player asks: the homebrew loader starts the new NRO after this one quits, or, if it
-/// takes no such request, the game quits to the homebrew menu.
+/// Writes each step to the log, gives a finished check's or download's thread back, and restarts
+/// into an installed update when the player asks: the homebrew loader starts the new NRO after
+/// this one quits, or, if it takes no such request, the game quits to the homebrew menu.
 fn poll(mut updater: ResMut<Updater>, mut exit: MessageWriter<AppExit>) {
     if let Ok(running) = &mut updater.updater {
         running.reap();
+    }
+    let step = updater.updater.as_ref().ok().and_then(|running| log_line(&running.state()));
+    if let Some(step) = step.filter(|step| *step != updater.logged) {
+        info!("[Update] {step}");
+        updater.logged = step;
     }
     if !std::mem::take(&mut updater.restart) {
         return;
@@ -170,4 +177,21 @@ fn poll(mut updater: ResMut<Updater>, mut exit: MessageWriter<AppExit>) {
         _ => info!("[Update] the homebrew loader takes no restart request; quitting to the homebrew menu"),
     }
     exit.write(AppExit::Success);
+}
+
+/// The log's line for a step; none while nothing has been asked.
+fn log_line(state: &State) -> Option<String> {
+    let held = |held: &Option<HeldBack>| {
+        held.as_ref().map(|held| format!("; {} needs files from PC {}", held.version, held.pc_build)).unwrap_or_default()
+    };
+    Some(match state {
+        State::Idle => return None,
+        State::Checking => "checking GitHub for a newer version".into(),
+        State::UpToDate { held_back } => format!("up to date at {VERSION}{}", held(held_back)),
+        State::Available { offer, held_back } => format!("{} available, {} bytes{}", offer.version, offer.size, held(held_back)),
+        State::Downloading { offer, .. } => format!("downloading {} ({})", offer.version, offer.tag),
+        State::Installed { offer } => format!("installed {}; the next start runs it", offer.version),
+        State::Failed(error) => format!("failed: {error}"),
+        State::Cancelled => "stopped".into(),
+    })
 }
