@@ -122,6 +122,28 @@ The pause menu's render scale draws the world at fewer pixels than the screen's.
 Switch more than the lower scale saves, and `env SKATE_UPSCALE=bilinear` stretches it
 without sharpening.
 
+## Updates
+
+When it starts, the game looks on GitHub for a newer version. If there is one, the pause
+menu's **Updates** row, under EXTRAS, shows `0.1.5 available`. Select it to download
+(about 106 MB) and install it, then select it again to restart into the new version; or
+play on, and the next start runs it. Selecting the row during the download stops it.
+Nothing changes until the download has passed its checks: its size, the SHA-256 GitHub
+lists for it, and the version it shows. The version it replaces stays beside it as
+`skate3rust.nro.update.old` until the new one starts. If the console goes to the HOME
+menu instead of restarting the game, start it again from the Homebrew Menu.
+
+An update replaces only `skate3rust.nro`: the game's files come from your own disc,
+through the PC version. A release that needs files set up by a newer PC build isn't
+installed this way. The Updates row names that PC build and offers the newest release your
+files work with instead. To move to it, update the PC version, let it set up, and run that
+release's `switch_export.py`, which copies its NRO too.
+
+`no_update_check` in `options.txt` stops the look at start-up; the Updates row still looks
+when you select it. The console's clock must be right, because GitHub's certificates are
+checked against it. Versions released before updates were added can't update themselves:
+install the first version with updates by hand.
+
 ## Logs
 
 Each launch rewrites `switch/skate3rust/log.txt`, and a crash writes `panic.txt`
@@ -136,8 +158,8 @@ beside it. Include both when reporting a problem.
   skater: each of its ten parts poses its own skeleton.
 - Road lines in the distance can shimmer slightly.
 - Docked play hasn't been tested.
-- Updates and Steam multiplayer are PC-only. Mods haven't been tested on the Switch, and
-  the export script doesn't copy mods.
+- Steam multiplayer is PC-only. Mods haven't been tested on the Switch, and the export
+  script doesn't copy mods.
 - LAN multiplayer is new in 0.1.4. Tested: one Switch hosting, with up to two PC players,
   and a Switch joining a PC host. Not tested on hardware: two Switches playing together,
   the refusal of a fourth player ("Lobby full"), and the 10-second timeout when a host goes
@@ -147,3 +169,31 @@ beside it. Include both when reporting a problem.
 
 The NRO is built with bevy-horizon's `scripts/build_game.sh` from this branch,
 bevy-horizon and mesa-switch; the release's `SOURCE.txt` names the exact revisions.
+
+### Publishing an update
+
+Build the NRO with `VERSION` set to the release's version, then make the two files an
+update needs beside the ZIP:
+
+```
+python3 tools/switch_release.py target/aarch64-nintendo-horizon/release/skate3rust.nro 0.1.5 release-files
+```
+
+It stops if the NRO doesn't show that version. Publish a release tagged `switch-v0.1.5`,
+not marked as a pre-release, with the ZIP, `skate3rust.nro` and `switch-release.json`. A
+release without the last two is never offered. The ZIP needs `tools/switch_assets.json`
+beside `switch_export.py`, which reads it, and libcurl's license with the others: the NRO
+links devkitPro's libcurl. Then, from Linux with libcurl's development files, see what
+players on the previous version are offered (`--install <folder>` downloads it too, with
+the Switch's checks):
+
+```
+cargo run -p skate-switch-update --features system-curl --example check -- 0.1.4
+```
+
+When the Switch build moves to another PC build's files, set `tools/switch_assets.json` to
+that build's `pc_build` and the `asset_pipelines` of its `release.json`. The NRO,
+`switch_export.py` and `switch-release.json` all take the set from there. A release with a
+different set is held back from players whose files don't match. If a new fingerprint makes
+the same files as an old one, list the pair under `pipeline_equivalence`, as in
+`tools/asset_pipeline/pipeline-equivalence.json`.
